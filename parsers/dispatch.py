@@ -1,32 +1,25 @@
 
-import streamlit as st
-from parsers.parser_galicia import parse_galicia
-from parsers.parser_generico import parse_generico
+import re
+from .parser_galicia import parse_galicia
+from .parser_generico import parse_generico
 
-GALICIA = "Banco Galicia"
-BNA     = "Banco de la Nación Argentina"
-SANTAFE = "Banco de Santa Fe"
-MACRO   = "Banco Macro"
-SANTAND = "Banco Santander"
+BANK_PATTERNS = {
+    "galicia": re.compile(r"galicia", re.I),
+    "nacion": re.compile(r"naci[oó]n", re.I),
+    "santafe": re.compile(r"santa\s*fe", re.I),
+    "macro": re.compile(r"macro", re.I),
+    "santander": re.compile(r"santander", re.I),
+}
 
-def detect_bank(full_text: str) -> str:
-    t = (full_text or "").upper()
-    if "BANCO GALICIA" in t or " GALICIA " in t:
-        return GALICIA
-    if "BANCO DE LA NACIÓN ARGENTINA" in t or "BANCO DE LA NACION ARGENTINA" in t or " BNA " in t:
-        return BNA
-    if "BANCO DE SANTA FE" in t:
-        return SANTAFE
-    if "BANCO MACRO" in t:
-        return MACRO
-    if "BANCO SANTANDER" in t or "SANTANDER RIO" in t or "SANTANDER RÍO" in t:
-        return SANTAND
-    return "Banco (no identificado)"
+def detect_bank(all_text: str) -> str:
+    t = all_text.lower()
+    for slug, pat in BANK_PATTERNS.items():
+        if pat.search(t):
+            return slug
+    return "desconocido"
 
-def run_parser(bank: str, pdf_bytes: bytes, full_text: str) -> None:
-    if bank == GALICIA:
-        parse_galicia(pdf_bytes, full_text)
-    elif bank in {BNA, SANTAFE, MACRO, SANTAND}:
-        parse_generico(bank, pdf_bytes, full_text)
-    else:
-        st.warning("No pude identificar el banco. Probá forzar la opción.")
+def run_parser_for(slug: str, pages_text: list[str]):
+    if slug == "galicia":
+        return parse_galicia(pages_text)
+    # resto
+    return parse_generico(pages_text)

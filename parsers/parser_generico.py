@@ -1,37 +1,67 @@
 
-import io, pdfplumber, re, pandas as pd, streamlit as st
-from parsers.utils import ar_to_float, show_resumen_periodo, render_movs
+import re
+from .utils import ar_to_float, normalize_whitespace, concilia, build_df
 
-def parse_generico(bank: str, pdf_bytes: bytes, full_text: str) -> None:
-    st.header(f"CUENTA ({bank}) · Parser genérico")
-    movs, saldo_ini, saldo_pdf = [], 0.0, 0.0
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as p:
-        for i, page in enumerate(p.pages):
-            text = page.extract_text() or ""
-            if i == 0:
-                m = re.search(r"SALDO\s+ANTERIOR.*?\$\s*([0-9\.\s]+,[0-9]{2})", text, re.IGNORECASE)
-                if m: saldo_ini = ar_to_float(m.group(0))
-            if i == len(p.pages)-1:
-                m = re.search(r"SALDO\s+FINAL.*?\$\s*([0-9\.\s]+,[0-9]{2})", text, re.IGNORECASE)
-                if m: saldo_pdf = ar_to_float(m.group(0))
-            for ln in (text or "").split("\n"):
-                ln_norm = re.sub(r"\s+"," ",ln).strip()
-                if re.search(r"SALDO\s+ANTERIOR", ln_norm, re.IGNORECASE): 
-                    continue
-                m_val = re.search(r"[-]?\$?\s*[0-9\.\s]+,[0-9]{2}", ln_norm)
-                if not m_val: 
-                    continue
-                val = ar_to_float(m_val.group(0))
-                desc = ln_norm[:80]
-                if re.search(r"(DEP\.?.?EFECTIVO|TRANSFERENCIAS? DE TERCEROS?|ABONO|CR[EÉ]DITO)", ln_norm, re.IGNORECASE):
-                    movs.append({"desc_norm":desc,"debito":0.0,"credito":abs(val)})
-                elif re.search(r"(D[EÉ]BIT|PAGO|COMISI[ÓO]N|IVA|LE[YI]\s*25\.?413|SIRCREB|IMPUESTO)", ln_norm, re.IGNORECASE):
-                    movs.append({"desc_norm":desc,"debito":abs(val),"credito":0.0})
+KEY_CRED = re.compile(r"(dep|transf|acred|credito|ingreso|^haber\b)", re.I)
+KEY_DEB  = re.compile(r"(debito|pago|serv|extrac|compra|^debe\b)", re.I)
+
+def parse_generico(pages_text: list[str]):
+    rows = []
+    total_debitos = 0.0
+    total_creditos = 0.0
+    saldo_inicial = 0.0
+    saldo_pdf = 0.0
+
+    full = "\n".join(pages_text)
+
+    # saldo inicial/final
+    m0 = re.search(r"Saldo\s+inicial.*?\$?\s*([-\d\.\,]+)", full, re.I)
+    if m0: saldo_inicial = ar_to_float(m0.group(1))
+    m1 = re.search(r"Saldo\s+final.*?\$?\s*([-\d\.\,]+)", full, re.I)
+    if m1: saldo_pdf = ar_to_float(m1.group(1))
+
+    for page in pages_text:
+        for raw in page.splitlines():
+            s = normalize_whitespace(raw)
+            if not re.search(r"\b\d{2}/\d{2}\b", s):
+                continue
+            mm = re.findall(r"[-]?\$?\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})", s)
+            if not mm: 
+                continue
+            monto = ar_to_float(mm[-1])
+
+            # Heurística: si dice "saldo anterior", la próxima línea determina el signo inverso para cuadrar
+            if re.search(r"saldo\s+anterior", s, re.I):
+                rows.append([s[:5], s, 0.0, 0.0, 0.0, 0.0, None])
+                continue
+
+            if KEY_DEB.search(s) and not KEY_CRED.search(s):
+                debito = abs(monto)
+                credito = 0.0
+            elif KEY_CRED.search(s) and not KEY_DEB.search(s):
+                debito = 0.0
+                credito = abs(monto)
+            else:
+                # fallback: signo negativo => débito
+                if "-" in s:
+                    debito = abs(monto); credito = 0.0
                 else:
-                    if "-" in m_val.group(0): movs.append({"desc_norm":desc,"debito":abs(val),"credito":0.0})
-                    else:                    movs.append({"desc_norm":desc,"debito":0.0,"credito":abs(val)})
-    df = pd.DataFrame(movs)
-    total_deb = round(df["debito"].sum(),2) if not df.empty else 0.0
-    total_cred= round(df["credito"].sum(),2) if not df.empty else 0.0
-    show_resumen_periodo(saldo_ini,total_cred,total_deb,saldo_pdf)
-    render_movs(df)
+                    credito = abs(monto); debito = 0.0
+
+            total_debitos += debito
+            total_creditos += credito
+            rows.append([s[:5], s, debito, credito, credito-debito, monto, None])
+
+    ok, calculado, diff = concilia(saldo_inicial, total_creditos, total_debitos, saldo_pdf)
+    df = build_df(rows)
+    resumen = {
+        "saldo_inicial": saldo_inicial,
+        "total_creditos": total_creditos,
+        "total_debitos": total_debitos,
+        "saldo_pdf": saldo_pdf,
+        "cuadra": ok,
+        "saldo_calc": calculado,
+        "diferencia": diff,
+        "parser": "generico",
+    }
+    return resumen, df

@@ -1,27 +1,53 @@
 
-import io, pdfplumber, re, pandas as pd, streamlit as st
-from parsers.utils import ar_to_float, show_resumen_periodo, render_movs
+import re
+from .utils import ar_to_float, normalize_whitespace, concilia, build_df
 
-def parse_galicia(pdf_bytes: bytes, full_text: str) -> None:
-    st.header("Cuenta Corriente (Galicia) · Parser")
+def parse_galicia(pages_text: list[str]):
+    # Galicia: débitos como negativos a la izquierda en el propio extracto
+    # Heurística: líneas con monto con "-" van a débito; resto a crédito si hay "+" o sin signo en columna crédito.
+    rows = []
+    total_debitos = 0.0
+    total_creditos = 0.0
+    saldo_inicial = 0.0
+    saldo_pdf = 0.0
 
-    movs, saldo_ini, saldo_pdf = [], 0.0, 0.0
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as p:
-        for i, page in enumerate(p.pages):
-            text = page.extract_text() or ""
-            if i == 0:
-                m = re.search(r"SALDO\s+INICIAL[^^$]*\$\s*([0-9\.\s]+,[0-9]{2})", text, re.IGNORECASE)
-                if m: saldo_ini = ar_to_float(m.group(0))
-            if i == len(p.pages)-1:
-                m = re.search(r"SALDO\s+FINAL[^^$]*\$\s*([0-9\.\s]+,[0-9]{2})", text, re.IGNORECASE)
-                if m: saldo_pdf = ar_to_float(m.group(0))
-            for ln in (text or "").split("\n"):
-                if re.search(r"[,][0-9]{2}", ln):
-                    val = ar_to_float(ln); desc = re.sub(r"\s+"," ",ln).strip()[:80]
-                    if "-" in ln: movs.append({"desc_norm":desc,"debito":abs(val),"credito":0.0})
-                    else:         movs.append({"desc_norm":desc,"debito":0.0,"credito":abs(val)})
-    df = pd.DataFrame(movs)
-    total_deb = round(df["debito"].sum(),2) if not df.empty else 0.0
-    total_cred= round(df["credito"].sum(),2) if not df.empty else 0.0
-    show_resumen_periodo(saldo_ini,total_cred,total_deb,saldo_pdf)
-    render_movs(df)
+    full = "\n".join(pages_text)
+
+    # saldo inicial / final (heurísticas simples)
+    m0 = re.search(r"Saldo\s+inicial.*?\$?\s*([-\d\.\,]+)", full, re.I)
+    if m0: saldo_inicial = ar_to_float(m0.group(1))
+    m1 = re.search(r"Saldo\s+final.*?\$?\s*([-\d\.\,]+)", full, re.I)
+    if m1: saldo_pdf = ar_to_float(m1.group(1))
+
+    for page in pages_text:
+        for raw in page.splitlines():
+            s = normalize_whitespace(raw)
+            # fecha dd/mm
+            if not re.search(r"\b\d{2}/\d{2}\b", s):
+                continue
+            # montos al final
+            mm = re.findall(r"[-]?\$?\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})", s)
+            if not mm: 
+                continue
+            monto_str = mm[-1]
+            monto = ar_to_float(monto_str)
+            is_debito = "-" in monto_str
+            debito = abs(monto) if is_debito else 0.0
+            credito = 0.0 if is_debito else abs(monto)
+            total_debitos += debito
+            total_creditos += credito
+            rows.append([s[:5], s, debito, credito, credito-debito, monto, None])
+
+    ok, calculado, diff = concilia(saldo_inicial, total_creditos, total_debitos, saldo_pdf)
+    df = build_df(rows)
+    resumen = {
+        "saldo_inicial": saldo_inicial,
+        "total_creditos": total_creditos,
+        "total_debitos": total_debitos,
+        "saldo_pdf": saldo_pdf,
+        "cuadra": ok,
+        "saldo_calc": calculado,
+        "diferencia": diff,
+        "parser": "galicia",
+    }
+    return resumen, df
