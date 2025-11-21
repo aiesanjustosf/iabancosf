@@ -92,14 +92,16 @@ def detectar_signo_santafe(desc_norm: str) -> str:
     u = (desc_norm or "").upper()
 
     # Créditos claros
-    if any(k in u for k in ("DTNPROVE","DEP EFEC","DEPOSITO EFECTIVO","TRANLINK","INT CCSA")):
+    if any(k in u for k in ("DTNPROVE", "DEP EFEC", "DEPOSITO EFECTIVO", "TRANLINK")):
         return "credito"
 
     # Depósito de cheque propio → crédito
     if "DEP CH PROPIO" in u or "D CH PRO" in u:
         return "credito"
 
+    # Todo lo demás → débito
     return "debito"
+
 
 def clasificar(desc,desc_norm,deb,cre):
     u=(desc or "").upper(); n=(desc_norm or "").upper()
@@ -214,7 +216,9 @@ else:
     df["signo"]=signos
 
 # Excluir saldo final como movimiento
-df = df[~df["descripcion"].str.upper().str.contains("SALDO AL|SALDO FINAL")]
+df = df[~df["desc_norm"].str.upper().str.contains("SALDO AL|SALDO FINAL")]
+df = df[~((df["desc_norm"] == "") & (df["debito"] > 0) & (df["orden"] > df["orden"].max() - 2))]
+
 
 # Clasificación
 df["Clasificación"]=df.apply(
