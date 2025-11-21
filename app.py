@@ -10,13 +10,12 @@ import streamlit as st
 # --- UI / assets ---
 HERE = Path(__file__).parent
 ASSETS = HERE / "assets"
-
 LOGO = ASSETS / "logo_aie.png"
 FAVICON = ASSETS / "favicon-aie.ico"
 
 st.set_page_config(
     page_title="IA Resumen Bancario - Banco de Santa Fe",
-    page_icon=str(FAVICON) if FAVICON.exists() else None
+    page_icon=str(FAVICON) if FAVICON.exists() else None,
 )
 
 if LOGO.exists():
@@ -140,11 +139,15 @@ def parse_pdf(file_like) -> pd.DataFrame:
 
 # --- saldo final ---
 def find_saldo_final(file_like):
+    """
+    Busca líneas tipo 'Saldo al 31/10/2025 .... 123.456,78'
+    y toma el último que aparezca en el PDF.
+    """
     with pdfplumber.open(file_like) as pdf:
         for page in reversed(pdf.pages):
             txt = page.extract_text() or ""
             for line in txt.splitlines():
-                if "Saldo al" in line:
+                if "Saldo al" in line or "SALDO AL" in line.upper():
                     d = DATE_RE.search(line)
                     am = list(MONEY_RE.finditer(line))
                     if d and am:
@@ -153,90 +156,62 @@ def find_saldo_final(file_like):
                         return fecha, saldo
     return pd.NaT, np.nan
 
-# --- saldo anterior (misma línea) ---
+# --- saldo anterior (SALDO ANTERIOR o SALDO ÚLTIMO RESUMEN) ---
 def find_saldo_anterior(file_like):
     """
-    Para Banco de Santa Fe:
-    - Puede venir como 'SALDO ANTERIOR'
-    - O como 'SALDO ULTIMO RESUMEN' / 'SALDO ÚLTIMO RESUMEN'
+    Intenta primero localizar 'SALDO ANTERIOR' en la misma línea del importe.
+    Si no lo encuentra, busca 'SALDO ULTIMO RESUMEN' / 'SALDO ÚLTIMO RESUMEN'
+    y toma el importe de esa línea o de las 1–2 líneas siguientes.
     """
     with pdfplumber.open(file_like) as pdf:
-        # 1) Intento con líneas reconstruidas por posición (words)
+        # 1) SALDO ANTERIOR usando reconstrucción de líneas por palabras
         for page in pdf.pages:
             words = page.extract_words(extra_attrs=["top", "x0"])
-            if words:
-                ytol = 2.0
-                lines = {}
-                for w in words:
-                    band = round(w["top"] / ytol)
-                    lines.setdefault(band, []).append(w)
-                for band in sorted(lines):
-                    ws = sorted(lines[band], key=lambda w: w["x0"])
-                    line_text = " ".join(w["text"] for w in ws)
-                    u = line_text.upper()
-                    # normalizo posibles acentos en ÚLTIMO
-                    u = u.replace("Ú", "U")
-                    if ("SALDO ANTERIOR" in u) or ("SALDO ULTIMO RESUMEN" in u):
-                        am = list(MONEY_RE.finditer(line_text))
-                        if am:
-                            return normalize_money(am[-1].group(0))
+            if not words:
+                continue
+            ytol = 2.0
+            lines = {}
+            for w in words:
+                band = round(w["top"] / ytol)
+                lines.setdefault(band, []).append(w)
+            for band in sorted(lines):
+                ws = sorted(lines[band], key=lambda w: w["x0"])
+                line_text = " ".join(w["text"] for w in ws)
+                if "SALDO ANTERIOR" in line_text.upper():
+                    am = list(MONEY_RE.finditer(line_text))
+                    if am:
+                        return normalize_money(am[-1].group(0))
 
-        # 2) Fallback con texto plano
+        # 2) Barrido de texto plano: SALDO ANTERIOR o SALDO ULTIMO RESUMEN
         for page in pdf.pages:
             txt = page.extract_text() or ""
-            for raw in txt.splitlines():
-                line = " ".join(raw.split())
-                u = line.upper().replace("Ú", "U")
-                if ("SALDO ANTERIOR" in u) or ("SALDO ULTIMO RESUMEN" in u):
+            raw_lines = [ " ".join(raw.split()) for raw in txt.splitlines() ]
+            n = len(raw_lines)
+            for idx, line in enumerate(raw_lines):
+                U = line.upper()
+
+                # SALDO ANTERIOR con importe en la misma línea
+                if "SALDO ANTERIOR" in U:
                     am = list(MONEY_RE.finditer(line))
                     if am:
                         return normalize_money(am[-1].group(0))
 
+                # SALDO ÚLTIMO RESUMEN: mismo criterio que usamos antes
+                if ("SALDO ULTIMO RESUMEN" in U) or ("SALDO ÚLTIMO RESUMEN" in U):
+                    # Mismo renglón
+                    am = list(MONEY_RE.finditer(line))
+                    if len(am) == 1:
+                        return normalize_money(am[-1].group(0))
+
+                    # Si no hay importe en la misma línea, buscar en las 1–2 siguientes
+                    for j in (idx + 1, idx + 2):
+                        if 0 <= j < n:
+                            l2 = raw_lines[j]
+                            am2 = list(MONEY_RE.finditer(l2))
+                            if len(am2) == 1:
+                                return normalize_money(am2[-1].group(0))
+
     return np.nan
-
-# --- UI principal ---
-uploaded = st.file_uploader("Subí un PDF del Banco de Santa Fe", type=["pdf"])
-if uploaded is None:
-    st.info("La app no almacena datos, toda la información está protegida.")
-    st.stop()
-
-data = uploaded.read()
-
-with st.spinner("Procesando PDF..."):
-    df = parse_pdf(io.BytesIO(data))
-
-if df.empty:
-    st.error("No se detectaron movimientos. Si el PDF tiene un formato distinto, pasame una línea ejemplo (fecha + descripción + importe + saldo).")
-    st.stop()
-
-# --- insertar SALDO ANTERIOR como PRIMERA fila sí o sí ---
-saldo_anterior = find_saldo_anterior(io.BytesIO(data))
-if not np.isnan(saldo_anterior):
-    first_date = df["fecha"].min()
-    fecha_apertura = (first_date - pd.Timedelta(days=1)).normalize() + pd.Timedelta(hours=23, minutes=59, seconds=59)
-    apertura = pd.DataFrame([{
-        "fecha": fecha_apertura,
-        "descripcion": "SALDO ANTERIOR",
-        "desc_norm": "SALDO ANTERIOR",
-        "debito": 0.0,
-        "credito": 0.0,
-        "importe": 0.0,
-        "saldo": float(saldo_anterior),
-        "pagina": 0,
-        "orden": 0
-    }])
-    df = pd.concat([apertura, df], ignore_index=True)
-
-# --- clasificar por variación de saldo ---
-df = df.sort_values(["fecha", "orden", "pagina"]).reset_index(drop=True)
-df["delta_saldo"] = df["saldo"].diff()
-df["debito"]  = 0.0
-df["credito"] = 0.0
-monto = df["importe"].abs()
-mask = df["delta_saldo"].notna()
-df.loc[mask & (df["delta_saldo"] > 0), "credito"] = monto[mask & (df["delta_saldo"] > 0)]
-df.loc[mask & (df["delta_saldo"] < 0), "debito"]  = monto[mask & (df["delta_saldo"] < 0)]
-df["importe"] = df["debito"] - df["credito"]
 
 # ---------- CLASIFICACIÓN ----------
 def clasificar(desc: str, desc_norm: str, deb: float, cre: float) -> str:
@@ -248,14 +223,15 @@ def clasificar(desc: str, desc_norm: str, deb: float, cre: float) -> str:
 
     # Impuesto ley 25413 / IMPTRANS
     if ("LEY 25413" in u) or ("IMPTRANS" in u) or ("LEY 25413" in n) or ("IMPTRANS" in n):
-        return "LEY 25413"
+        return "LEY 25.413"
 
     # SIRCREB
     if ("SIRCREB" in u) or ("SIRCREB" in n):
         return "SIRCREB"
 
     # Percepciones de IVA
-    if ("IVA PERC" in u) or ("IVA PERCEP" in u) or ("RG3337" in u) or ("IVA PERC" in n) or ("IVA PERCEP" in n) or ("RG3337" in n):
+    if ("IVA PERC" in u) or ("IVA PERCEP" in u) or ("RG3337" in u) or \
+       ("IVA PERC" in n) or ("IVA PERCEP" in n) or ("RG3337" in n):
         return "Percepciones de IVA"
 
     # IVA 21% (sobre comisiones)
@@ -278,6 +254,7 @@ def clasificar(desc: str, desc_norm: str, deb: float, cre: float) -> str:
     if "DYC" in n:
         return "DyC"
     
+    # Si es un débito y dice AFIP o ARCA → "Débitos ARCA"
     if ("AFIP" in n or "ARCA" in n) and deb and deb != 0:
         return "Débitos ARCA"
     
@@ -320,6 +297,50 @@ def clasificar(desc: str, desc_norm: str, deb: float, cre: float) -> str:
     if deb and deb != 0:
         return "Débito"
     return "Otros"
+
+# --- UI principal ---
+uploaded = st.file_uploader("Subí un PDF del Banco de Santa Fe", type=["pdf"])
+if uploaded is None:
+    st.info("La app no almacena datos, toda la información está protegida.")
+    st.stop()
+
+data = uploaded.read()
+
+with st.spinner("Procesando PDF..."):
+    df = parse_pdf(io.BytesIO(data))
+
+if df.empty:
+    st.error("No se detectaron movimientos. Si el PDF tiene un formato distinto, pasame una línea ejemplo (fecha + descripción + importe + saldo).")
+    st.stop()
+
+# --- insertar SALDO ANTERIOR como PRIMERA fila sí o sí ---
+saldo_anterior = find_saldo_anterior(io.BytesIO(data))
+if not np.isnan(saldo_anterior):
+    first_date = df["fecha"].min()
+    fecha_apertura = (first_date - pd.Timedelta(days=1)).normalize() + pd.Timedelta(hours=23, minutes=59, seconds=59)
+    apertura = pd.DataFrame([{
+        "fecha": fecha_apertura,
+        "descripcion": "SALDO ANTERIOR",
+        "desc_norm": "SALDO ANTERIOR",
+        "debito": 0.0,
+        "credito": 0.0,
+        "importe": 0.0,
+        "saldo": float(saldo_anterior),
+        "pagina": 0,
+        "orden": 0
+    }])
+    df = pd.concat([apertura, df], ignore_index=True)
+
+# --- clasificar por variación de saldo (manteniendo tu lógica original) ---
+df = df.sort_values(["fecha", "orden", "pagina"]).reset_index(drop=True)
+df["delta_saldo"] = df["saldo"].diff()
+df["debito"]  = 0.0
+df["credito"] = 0.0
+monto = df["importe"].abs()
+mask = df["delta_saldo"].notna()
+df.loc[mask & (df["delta_saldo"] > 0), "credito"] = monto[mask & (df["delta_saldo"] > 0)]
+df.loc[mask & (df["delta_saldo"] < 0), "debito"]  = monto[mask & (df["delta_saldo"] < 0)]
+df["importe"] = df["debito"] - df["credito"]
 
 df["Clasificación"] = df.apply(
     lambda r: clasificar(str(r.get("descripcion","")), str(r.get("desc_norm","")), r.get("debito",0.0), r.get("credito",0.0)),
@@ -370,7 +391,7 @@ net21  = round(iva21  / 0.21,  2) if iva21  else 0.0
 net105 = round(iva105 / 0.105, 2) if iva105 else 0.0
 
 percep_iva = float(df_sorted.loc[df_sorted["Clasificación"].eq("Percepciones de IVA"), "debito"].sum())
-ley_25413  = float(df_sorted.loc[df_sorted["Clasificación"].eq("LEY 25413"),          "debito"].sum())
+ley_25413  = float(df_sorted.loc[df_sorted["Clasificación"].eq("LEY 25.413"),          "debito"].sum())
 sircreb    = float(df_sorted.loc[df_sorted["Clasificación"].eq("SIRCREB"),            "debito"].sum())
 
 m1, m2, m3 = st.columns(3)
@@ -391,10 +412,13 @@ with o3: st.metric("SIRCREB", f"$ {fmt_ar(sircreb)}")
 total_operativo = net21 + iva21 + net105 + iva105 + percep_iva + ley_25413 + sircreb
 st.metric("Total Resumen Operativo", f"$ {fmt_ar(total_operativo)}")
 
-# ====== Detalle de movimientos (grilla) ======
+# ====== Detalle de movimientos ======
 st.divider()
 st.subheader("Detalle de movimientos")
-styled = df_sorted.style.format({c: fmt_ar for c in ["debito","credito","importe","saldo"]}, na_rep="—")
+styled = df_sorted.style.format(
+    {c: fmt_ar for c in ["debito","credito","importe","saldo"]},
+    na_rep="—"
+)
 st.dataframe(styled, use_container_width=True)
 
 # --- Descargar grilla en Excel (con fallback a CSV) ---
