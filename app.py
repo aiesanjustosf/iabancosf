@@ -429,29 +429,157 @@ except Exception:
 # ===========================
 #   PDF DEL RESUMEN OPERATIVO
 # ===========================
+# ===========================
+#   PDF DEL RESUMEN OPERATIVO
+# ===========================
 st.subheader("Descargar PDF del Resumen Operativo")
 try:
     from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
 
     pdf_buffer = io.BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=A4)
-    c.setFont("Helvetica", 12)
-    c.drawString(50, 800, "Resumen Operativo - Banco de Santa Fe")
-    c.drawString(50, 780, f"Saldo inicial: $ {fmt_ar(saldo_inicial)}")
-    c.drawString(50, 760, f"Créditos: $ {fmt_ar(total_creditos)}")
-    c.drawString(50, 740, f"Débitos: $ {fmt_ar(total_debitos)}")
-    c.drawString(50, 720, f"Saldo final calculado: $ {fmt_ar(saldo_final_calculado)}")
-    c.drawString(50, 700, f"Saldo final PDF: $ {fmt_ar(saldo_final_visto)}")
-    c.drawString(50, 680, f"Diferencia: $ {fmt_ar(diferencia)}")
-    c.drawString(50, 660, f"Total Gastos Bancarios: $ {fmt_ar(total_gastos)}")
-    c.showPage()
-    c.save()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4,
+                            leftMargin=40, rightMargin=40,
+                            topMargin=40, bottomMargin=40)
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "Titulo",
+        parent=styles["Heading1"],
+        alignment=1,          # centrado
+        spaceAfter=12
+    )
+    subtitle_style = ParagraphStyle(
+        "Subtitulo",
+        parent=styles["Heading2"],
+        alignment=1,
+        fontSize=12,
+        spaceAfter=12
+    )
+    normal = styles["Normal"]
+
+    story = []
+
+    # Logo (si existe)
+    try:
+        if LOGO.exists():
+            # Ancho aprox 4 cm
+            logo_img = Image(str(LOGO), width=120, height=40)
+            logo_img.hAlign = "RIGHT"
+            story.append(logo_img)
+            story.append(Spacer(1, 10))
+    except Exception:
+        # Si falla el logo, seguimos igual
+        pass
+
+    # Título principal
+    story.append(Paragraph("Resumen Operativo – Banco de Santa Fe", title_style))
+    story.append(Paragraph("Registración Módulo IVA", subtitle_style))
+    story.append(Spacer(1, 12))
+
+    # ------------------------
+    # Resumen del período
+    # ------------------------
+    story.append(Paragraph("<b>Resumen del período</b>", normal))
+    story.append(Spacer(1, 6))
+
+    tabla_resumen_data = [
+        ["Concepto", "Importe"],
+        ["Saldo inicial", f"$ {fmt_ar(saldo_inicial)}"],
+        ["Créditos (+)", f"$ {fmt_ar(total_creditos)}"],
+        ["Débitos (–)", f"$ {fmt_ar(total_debitos)}"],
+        ["Saldo final calculado", f"$ {fmt_ar(saldo_final_calculado)}"],
+        ["Saldo final (según PDF)", f"$ {fmt_ar(saldo_final_visto)}"],
+        ["Diferencia", f"$ {fmt_ar(diferencia)}"],
+    ]
+
+    tabla_resumen = Table(
+        tabla_resumen_data,
+        colWidths=[220, 120]
+    )
+    tabla_resumen.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+    ]))
+    story.append(tabla_resumen)
+    story.append(Spacer(1, 16))
+
+    # ------------------------
+    # Resumen Operativo IVA
+    # ------------------------
+    story.append(Paragraph("<b>Detalle para Módulo IVA</b>", normal))
+    story.append(Spacer(1, 6))
+
+    tabla_iva_data = [
+        ["Concepto", "Neto", "IVA", "Total"],
+        ["Comisiones 21%", f"$ {fmt_ar(net21)}", f"$ {fmt_ar(iva21)}", f"$ {fmt_ar(net21 + iva21)}"],
+        ["Comisiones 10,5%", f"$ {fmt_ar(net105)}", f"$ {fmt_ar(iva105)}", f"$ {fmt_ar(net105 + iva105)}"],
+        ["Percepciones de IVA", "", f"$ {fmt_ar(percep_iva)}", f"$ {fmt_ar(percep_iva)}"],
+        ["Ley 25.413", "", f"$ {fmt_ar(ley_25413)}", f"$ {fmt_ar(ley_25413)}"],
+        ["SIRCREB", "", f"$ {fmt_ar(sircreb)}", f"$ {fmt_ar(sircreb)}"],
+    ]
+
+    tabla_iva = Table(
+        tabla_iva_data,
+        colWidths=[200, 80, 80, 80]
+    )
+    tabla_iva.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+    ]))
+    story.append(tabla_iva)
+    story.append(Spacer(1, 10))
+
+    story.append(
+        Paragraph(
+            f"<b>Total gastos bancarios imputables a resultados:</b> "
+            f"$ {fmt_ar(total_gastos)}",
+            normal
+        )
+    )
+
+    # Pie / leyenda
+    story.append(Spacer(1, 18))
+    story.append(
+        Paragraph(
+            "Informe generado con IA Resumen Bancario – AIE San Justo. "
+            "Uso interno exclusivamente.",
+            ParagraphStyle(
+                "Pie",
+                parent=normal,
+                fontSize=8,
+                textColor=colors.grey,
+            )
+        )
+    )
+
+    # Construir PDF
+    doc.build(story)
     pdf_bytes = pdf_buffer.getvalue()
-    st.download_button("📥 Descargar PDF",
-                       data=pdf_bytes,
-                       file_name="resumen_operativo.pdf",
-                       mime="application/pdf",
-                       use_container_width=True)
+
+    st.download_button(
+        "📥 Descargar PDF",
+        data=pdf_bytes,
+        file_name="resumen_operativo_santafe.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+except Exception as e:
+    st.error(f"No se pudo generar el PDF: {e}")
+
 except Exception as e:
     st.error(f"No se pudo generar el PDF: {e}")
