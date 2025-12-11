@@ -39,7 +39,8 @@ def normalize_money(tok: str) -> float:
     try:
         val = float(f"{main}.{frac}")
         return -val if neg else val
-    except: return np.nan
+    except: 
+        return np.nan
 
 def fmt_ar(n): 
     return "—" if (n is None or (isinstance(n,float) and np.isnan(n))) else f"{n:,.2f}".replace(",", "§").replace(".", ",").replace("§",".")
@@ -54,10 +55,14 @@ def lines_from_words(page, ytol=2.0):
     lines,cur,band=[],[],None
     for w in words:
         b=round(w["top"]/ytol)
-        if band is None or b==band: cur.append(w)
-        else: lines.append(" ".join(x["text"] for x in cur)); cur=[w]
+        if band is None or b==band: 
+            cur.append(w)
+        else: 
+            lines.append(" ".join(x["text"] for x in cur))
+            cur=[w]
         band=b
-    if cur: lines.append(" ".join(x["text"] for x in cur))
+    if cur: 
+        lines.append(" ".join(x["text"] for x in cur))
     return [" ".join(l.split()) for l in lines]
 
 def normalize_desc(desc): 
@@ -67,17 +72,22 @@ def extract_all_lines(file_like):
     out=[]
     with pdfplumber.open(file_like) as pdf:
         for pi,p in enumerate(pdf.pages,start=1):
-            lt=lines_from_text(p); lw=lines_from_words(p,ytol=2.0)
-            seen=set(lt); combined=lt+[l for l in lw if l not in seen]
+            lt=lines_from_text(p)
+            lw=lines_from_words(p,ytol=2.0)
+            seen=set(lt)
+            combined=lt+[l for l in lw if l not in seen]
             for l in combined:
-                if l.strip(): out.append((pi," ".join(l.split())))
+                if l.strip(): 
+                    out.append((pi," ".join(l.split())))
     return out
+
 def find_saldo_anterior(lines):
     for _,ln in lines:
         u=ln.upper()
         if "SALDO ANTERIOR" in u or "SALDO ULTIMO RESUMEN" in u:
             am=list(MONEY_RE.finditer(ln))
-            if am: return normalize_money(am[-1].group(0))
+            if am: 
+                return normalize_money(am[-1].group(0))
     return np.nan
 
 def find_saldo_final_pdf(lines):
@@ -85,60 +95,126 @@ def find_saldo_final_pdf(lines):
         u=ln.upper()
         if "SALDO AL" in u or "SALDO FINAL" in u:
             am=list(MONEY_RE.finditer(ln))
-            if am: return normalize_money(am[-1].group(0))
+            if am: 
+                return normalize_money(am[-1].group(0))
     return np.nan
 
+# ------------------------------------------------------------------
+# DETECCIÓN DE SIGNO – BANCO SANTA FE (ajustada)                   #
+# ------------------------------------------------------------------
 def detectar_signo_santafe(desc_norm: str) -> str:
     u = (desc_norm or "").upper()
 
-    # Créditos claros
-    if any(k in u for k in ("DTNPROVE", "DEP EFEC", "DEPOSITO EFECTIVO", "TRANLINK")):
+    # Créditos claros (ingresos)
+    credit_keywords = [
+        "DTNPROVE",
+        "DEP EFEC",
+        "DEPOSITO EFECTIVO",
+        "DEP CH PROPIO",
+        "D CH PRO",
+        "TRANLINK",            # transferencias propias
+        "CR-TRSFE",            # transferencias recibidas
+        "TR.CTA",              # transferencias a / desde cuenta
+        "CN-IMPTR",            # nota de crédito impuesto ley 25413
+        "CNDBEMBA",            # nota de crédito embargos
+        "TRANSACD",            # TRANSAC. DEBIN → Debin acreditado
+    ]
+    if any(k in u for k in credit_keywords):
         return "credito"
 
-    # Depósito de cheque propio → crédito
-    if "DEP CH PROPIO" in u or "D CH PRO" in u:
-        return "credito"
+    # Débitos claros (egresos)
+    debit_keywords = [
+        "DB/PG",               # débitos por pagos
+        "DB-SNP",              # débitos AFIP / seguros
+        "DB-EMBAR",            # embargos
+        "IMPTRANS",            # Impuesto Ley 25.413
+        "COMMANTP",            # comisiones mantenimiento
+        "COMRESUM",            # comisiones extracto
+        "DEBITO INMEDIATO",    # otros débitos automáticos
+    ]
+    if any(k in u for k in debit_keywords):
+        return "debito"
 
-    # Todo lo demás → débito
+    # Fallbacks por prefijo del concepto
+    if u.startswith("CR-") or " CR-" in u:
+        return "credito"
+    if u.startswith("DB-") or " DB-" in u:
+        return "debito"
+
+    # Por defecto, asumimos débito
     return "debito"
 
-
+# ------------------------------------------------------------------
+# CLASIFICACIÓN PARA RESUMEN OPERATIVO (ajustada IVA PERC)         #
+# ------------------------------------------------------------------
 def clasificar(desc,desc_norm,deb,cre):
-    u=(desc or "").upper(); n=(desc_norm or "").upper()
-    if "IVA GRAL" in u: return "IVA 21% (sobre comisiones)"
-    if "IVA RINS" in u: return "IVA 10,5% (sobre comisiones)"
-    if "IMPTRANS" in u or "LEY 25413" in u: return "LEY 25.413"
-    if "SIRCREB" in u: return "SIRCREB"
-    if "COM" in u: return "Gastos por comisiones"
-    if "DEBITO INMEDIATO" in u: return "Débito automático"
-    if cre: return "Crédito"
-    if deb: return "Débito"
+    u = (desc or "").upper()
+
+    # Percepciones de IVA del resumen (ej: IVA PERC / IVA PERCEP.RG3337)
+    if "IVA PERC" in u or "IVA PERCEP" in u or "PERCEP.RG" in u:
+        return "Percepciones de IVA"
+
+    if "IVA GRAL" in u:
+        return "IVA 21% (sobre comisiones)"
+    if "IVA RINS" in u:
+        return "IVA 10,5% (sobre comisiones)"
+    if "IMPTRANS" in u or "LEY 25413" in u:
+        return "LEY 25.413"
+    if "SIRCREB" in u:
+        return "SIRCREB"
+    if "COM" in u:
+        return "Gastos por comisiones"
+    if "DEBITO INMEDIATO" in u:
+        return "Débito automático"
+
+    if cre:
+        return "Crédito"
+    if deb:
+        return "Débito"
     return "Otros"
 
 def parse_movimientos_santafe(lines):
     rows=[]; orden=0
     for pageno,ln in lines:
         u=ln.upper()
-        if "FECHA MOVIMIENTO" in u or "CONCEPTO" in u: continue
-        if "SALDO ANTERIOR" in u or "SALDO ULTIMO RESUMEN" in u: continue
+        if "FECHA MOVIMIENTO" in u or "CONCEPTO" in u: 
+            continue
+        if "SALDO ANTERIOR" in u or "SALDO ULTIMO RESUMEN" in u: 
+            continue
+
         d=DATE_RE.search(ln)
-        if not d: continue
+        if not d: 
+            continue
+
         am=list(MONEY_RE.finditer(ln))
-        if not am: continue
+        if not am: 
+            continue
+
         mcount=len(am)
         if mcount>=2:
-            importe_str=am[-2].group(0); saldo_str=am[-1].group(0)
+            importe_str=am[-2].group(0)
+            saldo_str=am[-1].group(0)
             saldo_pdf=normalize_money(saldo_str)
         else:
-            importe_str=am[-1].group(0); saldo_pdf=np.nan
+            importe_str=am[-1].group(0)
+            saldo_pdf=np.nan
+
         importe=normalize_money(importe_str)
-        first_money=am[0]; desc=ln[d.end():first_money.start()].strip()
+        first_money=am[0]
+        desc=ln[d.end():first_money.start()].strip()
         orden+=1
-        rows.append({"fecha":pd.to_datetime(d.group(0),dayfirst=True,errors="coerce"),
-                     "descripcion":desc,"desc_norm":normalize_desc(desc),
-                     "importe_raw":abs(importe),"saldo_pdf":saldo_pdf,
-                     "mcount":mcount,"pagina":pageno,"orden":orden})
+        rows.append({
+            "fecha":pd.to_datetime(d.group(0),dayfirst=True,errors="coerce"),
+            "descripcion":desc,
+            "desc_norm":normalize_desc(desc),
+            "importe_raw":abs(importe),
+            "saldo_pdf":saldo_pdf,
+            "mcount":mcount,
+            "pagina":pageno,
+            "orden":orden
+        })
     return pd.DataFrame(rows)
+
 uploaded=st.file_uploader("Subí un PDF del resumen bancario (Banco de Santa Fe)",type=["pdf"])
 if uploaded is None: 
     st.stop()
@@ -183,6 +259,7 @@ if tiene_saldo_por_linea:
             df.at[idx,"debito"]=importe
         else:
             df.at[idx,"credito"]=importe
+
     df["saldo"]=saldo_anterior+df["credito"].cumsum()-df["debito"].cumsum()
     df.loc[df["debito"]>0,"signo"]="debito"
     df.loc[df["credito"]>0,"signo"]="credito"
@@ -219,7 +296,6 @@ else:
 df = df[~df["desc_norm"].str.upper().str.contains("SALDO AL|SALDO FINAL")]
 df = df[~((df["desc_norm"] == "") & (df["debito"] > 0) & (df["orden"] > df["orden"].max() - 2))]
 
-
 # Clasificación
 df["Clasificación"]=df.apply(
     lambda r: clasificar(str(r.get("descripcion","")),
@@ -228,6 +304,7 @@ df["Clasificación"]=df.apply(
                          float(r.get("credito",0.0))),
     axis=1
 )
+
 # ===========================
 #   RESUMEN / CONCILIACIÓN
 # ===========================
@@ -253,8 +330,10 @@ with c4: st.metric("Saldo final (PDF)", f"$ {fmt_ar(saldo_final_visto)}")
 with c5: st.metric("Saldo final calculado", f"$ {fmt_ar(saldo_final_calculado)}")
 with c6: st.metric("Diferencia", f"$ {fmt_ar(diferencia)}")
 
-if cuadra: st.success("Conciliado.")
-else: st.error("No cuadra la conciliación (revisar signos/clasificación).")
+if cuadra: 
+    st.success("Conciliado.")
+else: 
+    st.error("No cuadra la conciliación (revisar signos/clasificación).")
 
 st.markdown("---")
 
