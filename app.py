@@ -191,44 +191,38 @@ def clasificar(desc, desc_norm, deb, cre):
 
 
 # ------------------------------------------------------------------
-# DETECCIÓN / CLASIFICACIÓN DE PRÉSTAMOS (listado de “créditos”)
+# PRÉSTAMOS (SOLO CUOTA / ACREDITACIÓN / PRÉSTAMO EXPLÍCITO)
 # ------------------------------------------------------------------
 def clasificar_prestamo(desc_norm: str, debito: float, credito: float) -> str:
     """
-    Devuelve:
-      - "" si no parece préstamo/crédito
-      - "Acreditación préstamo"
-      - "Pago cuota préstamo"
-      - "Débito préstamo"
-      - "Crédito préstamo"
-      - "Ajuste/Reverso préstamo"
+    Devuelve "" si NO es préstamo.
+    Para ser préstamo debe haber señales explícitas: PREST/PRST/PRÉST, CUOTA, AMORT, CANCEL, etc.
+    Regla clave: 'CREDIN' SOLO no califica como préstamo.
     """
     u = (desc_norm or "").upper()
 
-    # Señales “fuertes” (incluye CREDIN porque suele venir asociado a créditos)
-    es_prestamo = (
-        ("PREST" in u) or
-        ("PRST" in u) or
-        ("CREDIN" in u) or
-        (("CREDITO" in u) and any(k in u for k in ["CUOTA", "PERSONAL", "HIPOT", "PREAP", "PREST"]))
-    )
-    if not es_prestamo:
+    # Si solo aparece CREDIN sin señales de préstamo, NO es préstamo
+    if "CREDIN" in u and not any(k in u for k in ["PREST", "PRÉST", "PRST", "CUOTA", "AMORT", "CANCEL"]):
         return ""
 
-    # Ajustes/reversos
-    if any(k in u for k in ["REVERS", "ANUL", "AJUST"]):
-        return "Ajuste/Reverso préstamo"
+    loan_markers = [
+        "PREST", "PRÉST", "PRST",
+        "CUOTA", "AMORT", "CANCEL",
+        "OTORG", "DESEMBOL", "LIQUID",
+        "CREDITO PERSONAL", "CREDITO HIPOT", "CREDITO PREND"
+    ]
 
-    if debito > 0:
-        if any(k in u for k in ["CUOTA", "PAGO", "AMORT", "CANCEL"]):
-            return "Pago cuota préstamo"
-        return "Débito préstamo"
+    if not any(k in u for k in loan_markers):
+        return ""
 
-    if credito > 0:
-        # si hubiese reintegro, quedaría arriba por revers/ajust
+    # Clasificación principal
+    if debito > 0 and any(k in u for k in ["CUOTA", "AMORT", "PAGO", "CANCEL"]):
+        return "Cuota préstamo"
+
+    if credito > 0 and any(k in u for k in ["OTORG", "DESEMBOL", "LIQUID", "ACRED"]):
         return "Acreditación préstamo"
 
-    return "Crédito/Préstamo (sin importe)"
+    return "Préstamo (revisar)"
 
 
 def parse_movimientos_santafe(lines):
@@ -463,9 +457,54 @@ st.metric("Total Gastos Bancarios", f"$ {fmt_ar(total_gastos)}")
 st.markdown("---")
 
 # ===========================
-#   PRÉSTAMOS / CRÉDITOS (LISTADO)
+#   LISTADO DE CRÉDITOS (INGRESOS)
 # ===========================
-st.subheader("Préstamos / Créditos detectados (acreditaciones, cuotas, etc.)")
+st.subheader("Créditos (ingresos) – listado")
+
+df_creditos = df_sorted[
+    (df_sorted["credito"] > 0) &
+    (df_sorted["desc_norm"].ne("SALDO ANTERIOR"))
+].copy()
+
+if df_creditos.empty:
+    st.info("No hay créditos (ingresos) en este período.")
+else:
+    st.metric("Total créditos (ingresos)", f"$ {fmt_ar(float(df_creditos['credito'].sum()))}")
+
+    df_creditos_view = df_creditos[["fecha", "descripcion", "credito", "saldo"]].copy()
+    for c in ("credito", "saldo"):
+        df_creditos_view[c] = df_creditos_view[c].map(fmt_ar)
+    st.dataframe(df_creditos_view, use_container_width=True)
+
+    st.markdown("**Descarga del listado de créditos (ingresos)**")
+    try:
+        import xlsxwriter
+        out_c = io.BytesIO()
+        with pd.ExcelWriter(out_c, engine="xlsxwriter") as writer:
+            df_creditos.to_excel(writer, index=False, sheet_name="Creditos")
+        st.download_button(
+            "📥 Descargar créditos (Excel)",
+            data=out_c.getvalue(),
+            file_name="creditos_santafe.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    except Exception:
+        csv_c = df_creditos.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 Descargar créditos (CSV)",
+            data=csv_c,
+            file_name="creditos_santafe.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+st.markdown("---")
+
+# ===========================
+#   PRÉSTAMOS (SOLO CUOTAS / ACREDITACIONES / PRÉSTAMO EXPLÍCITO)
+# ===========================
+st.subheader("Préstamos detectados (solo cuotas / acreditaciones / préstamo explícito)")
 
 df_sorted["Evento préstamo"] = df_sorted.apply(
     lambda r: clasificar_prestamo(
@@ -479,11 +518,10 @@ df_sorted["Evento préstamo"] = df_sorted.apply(
 df_prest = df_sorted[df_sorted["Evento préstamo"].ne("")].copy()
 
 if df_prest.empty:
-    st.info("No se detectaron movimientos de préstamos/créditos en este período (según reglas actuales).")
+    st.info("No se detectaron movimientos de préstamos en este período (según reglas actuales).")
 else:
-    # Métricas rápidas
     total_acreditaciones = float(df_prest.loc[df_prest["Evento préstamo"].eq("Acreditación préstamo"), "credito"].sum())
-    total_cuotas = float(df_prest.loc[df_prest["Evento préstamo"].eq("Pago cuota préstamo"), "debito"].sum())
+    total_cuotas = float(df_prest.loc[df_prest["Evento préstamo"].eq("Cuota préstamo"), "debito"].sum())
     total_debitos_prest = float(df_prest["debito"].sum())
     total_creditos_prest = float(df_prest["credito"].sum())
     neto_prest = total_creditos_prest - total_debitos_prest
@@ -492,7 +530,7 @@ else:
     with p1:
         st.metric("Acreditaciones (prést.)", f"$ {fmt_ar(total_acreditaciones)}")
     with p2:
-        st.metric("Cuotas pagadas (prést.)", f"$ {fmt_ar(total_cuotas)}")
+        st.metric("Cuotas (prést.)", f"$ {fmt_ar(total_cuotas)}")
     with p3:
         st.metric("Débitos totales (prést.)", f"$ {fmt_ar(total_debitos_prest)}")
     with p4:
@@ -503,31 +541,12 @@ else:
         df_prest_view[c] = df_prest_view[c].map(fmt_ar)
     st.dataframe(df_prest_view, use_container_width=True)
 
-    # Descarga específica préstamos (Excel con fallback CSV)
-    st.markdown("**Descarga del listado de préstamos/créditos**")
+    st.markdown("**Descarga del listado de préstamos**")
     try:
         import xlsxwriter
         out_p = io.BytesIO()
         with pd.ExcelWriter(out_p, engine="xlsxwriter") as writer:
             df_prest.to_excel(writer, index=False, sheet_name="Prestamos")
-            wb = writer.book
-            ws = writer.sheets["Prestamos"]
-            money_fmt = wb.add_format({"num_format": "#,##0.00"})
-            date_fmt = wb.add_format({"num_format": "dd/mm/yyyy"})
-
-            for idx, col in enumerate(df_prest.columns, start=0):
-                col_values = df_prest[col].astype(str)
-                max_len = max(len(col), *(len(v) for v in col_values))
-                ws.set_column(idx, idx, min(max_len + 2, 45))
-
-            for c in ["debito", "credito", "saldo", "importe_raw", "saldo_pdf"]:
-                if c in df_prest.columns:
-                    j = df_prest.columns.get_loc(c)
-                    ws.set_column(j, j, 16, money_fmt)
-            if "fecha" in df_prest.columns:
-                j = df_prest.columns.get_loc("fecha")
-                ws.set_column(j, j, 14, date_fmt)
-
         st.download_button(
             "📥 Descargar préstamos (Excel)",
             data=out_p.getvalue(),
@@ -557,7 +576,7 @@ for c in ("debito", "credito", "saldo"):
 st.dataframe(df_view, use_container_width=True)
 
 # ===========================
-#   DESCARGAS
+#   DESCARGAS (EXCEL/CSV)
 # ===========================
 st.subheader("Descargar")
 try:
@@ -566,15 +585,20 @@ try:
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df_sorted.to_excel(writer, index=False, sheet_name="Movimientos")
 
-        # Hoja extra (si hay préstamos detectados)
+        if not df_creditos.empty:
+            df_creditos.to_excel(writer, index=False, sheet_name="Creditos")
+
         if not df_prest.empty:
             df_prest.to_excel(writer, index=False, sheet_name="Prestamos")
 
         wb = writer.book
-        ws = writer.sheets["Movimientos"]
+
+        # Formatos base
         money_fmt = wb.add_format({"num_format": "#,##0.00"})
         date_fmt = wb.add_format({"num_format": "dd/mm/yyyy"})
 
+        # Ajuste columnas en Movimientos
+        ws = writer.sheets["Movimientos"]
         for idx, col in enumerate(df_sorted.columns, start=0):
             col_values = df_sorted[col].astype(str)
             max_len = max(len(col), *(len(v) for v in col_values))
@@ -588,6 +612,38 @@ try:
         if "fecha" in df_sorted.columns:
             j = df_sorted.columns.get_loc("fecha")
             ws.set_column(j, j, 14, date_fmt)
+
+        # Ajuste columnas en Creditos
+        if not df_creditos.empty:
+            ws_c = writer.sheets["Creditos"]
+            for idx, col in enumerate(df_creditos.columns, start=0):
+                col_values = df_creditos[col].astype(str)
+                max_len = max(len(col), *(len(v) for v in col_values))
+                ws_c.set_column(idx, idx, min(max_len + 2, 45))
+            if "credito" in df_creditos.columns:
+                j = df_creditos.columns.get_loc("credito")
+                ws_c.set_column(j, j, 16, money_fmt)
+            if "saldo" in df_creditos.columns:
+                j = df_creditos.columns.get_loc("saldo")
+                ws_c.set_column(j, j, 16, money_fmt)
+            if "fecha" in df_creditos.columns:
+                j = df_creditos.columns.get_loc("fecha")
+                ws_c.set_column(j, j, 14, date_fmt)
+
+        # Ajuste columnas en Prestamos
+        if not df_prest.empty:
+            ws_p = writer.sheets["Prestamos"]
+            for idx, col in enumerate(df_prest.columns, start=0):
+                col_values = df_prest[col].astype(str)
+                max_len = max(len(col), *(len(v) for v in col_values))
+                ws_p.set_column(idx, idx, min(max_len + 2, 45))
+            for c in ["debito", "credito", "saldo", "importe_raw", "saldo_pdf"]:
+                if c in df_prest.columns:
+                    j = df_prest.columns.get_loc(c)
+                    ws_p.set_column(j, j, 16, money_fmt)
+            if "fecha" in df_prest.columns:
+                j = df_prest.columns.get_loc("fecha")
+                ws_p.set_column(j, j, 14, date_fmt)
 
     st.download_button(
         "📥 Descargar Excel",
@@ -628,7 +684,7 @@ try:
     title_style = ParagraphStyle(
         "Titulo",
         parent=styles["Heading1"],
-        alignment=1,
+        alignment=1,          # centrado
         spaceAfter=12
     )
     subtitle_style = ParagraphStyle(
@@ -656,6 +712,7 @@ try:
     story.append(Paragraph("Registración Módulo IVA", subtitle_style))
     story.append(Spacer(1, 12))
 
+    # Resumen del período
     story.append(Paragraph("<b>Resumen del período</b>", normal))
     story.append(Spacer(1, 6))
 
@@ -682,6 +739,7 @@ try:
     story.append(tabla_resumen)
     story.append(Spacer(1, 16))
 
+    # Resumen Operativo IVA
     story.append(Paragraph("<b>Detalle para Módulo IVA</b>", normal))
     story.append(Spacer(1, 6))
 
@@ -727,5 +785,6 @@ try:
         mime="application/pdf",
         use_container_width=True,
     )
+
 except Exception as e:
     st.error(f"No se pudo generar el PDF: {e}")
