@@ -3,7 +3,9 @@
 
 import io, re
 from pathlib import Path
-import numpy as np, pandas as pd, streamlit as st
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 HERE = Path(__file__).parent
 ASSETS = HERE / "assets"
@@ -13,11 +15,22 @@ FAVICON = ASSETS / "favicon-aie.ico"
 st.set_page_config(
     page_title="IA Resumen Bancario – Banco de Santa Fe",
     page_icon=str(FAVICON) if FAVICON.exists() else None,
-    layout="wide"
+    layout="centered",
+)
+
+# Contenedor centrado tipo BNA
+st.markdown(
+    """
+<style>
+  .block-container { max-width: 980px; padding-top: 1rem; }
+</style>
+""",
+    unsafe_allow_html=True,
 )
 
 if LOGO.exists():
     st.image(str(LOGO), width=200)
+
 st.title("IA Resumen Bancario – Banco de Santa Fe")
 
 try:
@@ -27,7 +40,7 @@ except Exception as e:
     st.stop()
 
 DATE_RE = re.compile(r"\b\d{1,2}/\d{1,2}/\d{4}\b")
-MONEY_RE = re.compile(r'(?<!\S)-?(?:\d{1,3}(?:\.\d{3})*|\d+)\s?,\s?\d{2}-?(?!\S)')
+MONEY_RE = re.compile(r"(?<!\S)-?(?:\d{1,3}(?:\.\d{3})*|\d+)\s?,\s?\d{2}-?(?!\S)")
 LONG_INT_RE = re.compile(r"\b\d{6,}\b")
 
 
@@ -114,7 +127,7 @@ def find_saldo_final_pdf(lines):
 
 
 # ------------------------------------------------------------------
-# DETECCIÓN DE SIGNO – BANCO SANTA FE (ajustada)
+# DETECCIÓN DE SIGNO – BANCO SANTA FE
 # ------------------------------------------------------------------
 def detectar_signo_santafe(desc_norm: str) -> str:
     u = (desc_norm or "").upper()
@@ -126,26 +139,26 @@ def detectar_signo_santafe(desc_norm: str) -> str:
         "DEPOSITO EFECTIVO",
         "DEP CH PROPIO",
         "D CH PRO",
-        "TRANLINK",            # transferencias
-        "TRANSCRE",            # FIX: TRANSCRE ... CREDIN ... (venía quedando como débito)
-        "CR-TRSFE",            # transferencias recibidas
-        "TR.CTA",              # transferencias a / desde cuenta
-        "CN-IMPTR",            # nota de crédito impuesto ley 25413
-        "CNDBEMBA",            # nota de crédito embargos
-        "TRANSACD",            # TRANSAC. DEBIN → Debin acreditado
+        "TRANLINK",
+        "TRANSCRE",            # FIX: TRANSCRE ... CREDIN ... (antes caía a débito)
+        "CR-TRSFE",
+        "TR.CTA",
+        "CN-IMPTR",
+        "CNDBEMBA",
+        "TRANSACD",
     ]
     if any(k in u for k in credit_keywords):
         return "credito"
 
     # Débitos claros (egresos)
     debit_keywords = [
-        "DB/PG",               # débitos por pagos
-        "DB-SNP",              # débitos AFIP / seguros
-        "DB-EMBAR",            # embargos
-        "IMPTRANS",            # Impuesto Ley 25.413
-        "COMMANTP",            # comisiones mantenimiento
-        "COMRESUM",            # comisiones extracto
-        "DEBITO INMEDIATO",    # otros débitos automáticos
+        "DB/PG",
+        "DB-SNP",
+        "DB-EMBAR",
+        "IMPTRANS",
+        "COMMANTP",
+        "COMRESUM",
+        "DEBITO INMEDIATO",
     ]
     if any(k in u for k in debit_keywords):
         return "debito"
@@ -161,12 +174,11 @@ def detectar_signo_santafe(desc_norm: str) -> str:
 
 
 # ------------------------------------------------------------------
-# CLASIFICACIÓN PARA RESUMEN OPERATIVO (ajustada IVA PERC)
+# CLASIFICACIÓN PARA RESUMEN OPERATIVO
 # ------------------------------------------------------------------
 def clasificar(desc, desc_norm, deb, cre):
     u = (desc or "").upper()
 
-    # Percepciones de IVA del resumen (ej: IVA PERC / IVA PERCEP.RG3337)
     if "IVA PERC" in u or "IVA PERCEP" in u or "PERCEP.RG" in u:
         return "Percepciones de IVA"
 
@@ -209,13 +221,11 @@ def clasificar_prestamo(desc_norm: str, debito: float, credito: float) -> str:
         "PREST", "PRÉST", "PRST",
         "CUOTA", "AMORT", "CANCEL",
         "OTORG", "DESEMBOL", "LIQUID",
-        "CREDITO PERSONAL", "CREDITO HIPOT", "CREDITO PREND"
+        "CREDITO PERSONAL", "CREDITO HIPOT", "CREDITO PREND",
     ]
-
     if not any(k in u for k in loan_markers):
         return ""
 
-    # Clasificación principal
     if debito > 0 and any(k in u for k in ["CUOTA", "AMORT", "PAGO", "CANCEL"]):
         return "Cuota préstamo"
 
@@ -257,19 +267,24 @@ def parse_movimientos_santafe(lines):
         desc = ln[d.end():first_money.start()].strip()
 
         orden += 1
-        rows.append({
-            "fecha": pd.to_datetime(d.group(0), dayfirst=True, errors="coerce"),
-            "descripcion": desc,
-            "desc_norm": normalize_desc(desc),
-            "importe_raw": abs(importe),
-            "saldo_pdf": saldo_pdf,
-            "mcount": mcount,
-            "pagina": pageno,
-            "orden": orden
-        })
+        rows.append(
+            {
+                "fecha": pd.to_datetime(d.group(0), dayfirst=True, errors="coerce"),
+                "descripcion": desc,
+                "desc_norm": normalize_desc(desc),
+                "importe_raw": abs(importe),
+                "saldo_pdf": saldo_pdf,
+                "mcount": mcount,
+                "pagina": pageno,
+                "orden": orden,
+            }
+        )
     return pd.DataFrame(rows)
 
 
+# ===========================
+#   UPLOAD
+# ===========================
 uploaded = st.file_uploader("Subí un PDF del resumen bancario (Banco de Santa Fe)", type=["pdf"])
 if uploaded is None:
     st.stop()
@@ -278,14 +293,14 @@ data = uploaded.read()
 lines = extract_all_lines(io.BytesIO(data))
 df_raw = parse_movimientos_santafe(lines)
 
-tiene_saldo_por_linea = df_raw["mcount"].max() >= 2
+tiene_saldo_por_linea = (not df_raw.empty) and (df_raw["mcount"].max() >= 2)
 saldo_anterior = find_saldo_anterior(lines)
 saldo_final_pdf = find_saldo_final_pdf(lines)
 
 df = df_raw.sort_values(["fecha", "pagina", "orden"]).reset_index(drop=True)
 
 # Insertar saldo anterior
-if not np.isnan(saldo_anterior):
+if not df.empty and not np.isnan(saldo_anterior):
     apertura = {
         "fecha": df["fecha"].min() - pd.Timedelta(days=1),
         "descripcion": "SALDO ANTERIOR",
@@ -294,7 +309,7 @@ if not np.isnan(saldo_anterior):
         "saldo_pdf": saldo_anterior,
         "mcount": 0,
         "pagina": 0,
-        "orden": 0
+        "orden": 0,
     }
     df = pd.concat([pd.DataFrame([apertura]), df], ignore_index=True)
 
@@ -303,7 +318,9 @@ df["credito"] = 0.0
 df["saldo"] = np.nan
 df["signo"] = ""
 
-# ---------- Caso 1: PDF con SALDO por línea ----------
+# ===========================
+#   SALDOS + SIGNOS
+# ===========================
 if tiene_saldo_por_linea:
     for idx, row in df.iterrows():
         if row["desc_norm"] == "SALDO ANTERIOR":
@@ -315,11 +332,13 @@ if tiene_saldo_por_linea:
         else:
             df.at[idx, "credito"] = importe
 
-    df["saldo"] = saldo_anterior + df["credito"].cumsum() - df["debito"].cumsum()
+    if not np.isnan(saldo_anterior):
+        df["saldo"] = saldo_anterior + df["credito"].cumsum() - df["debito"].cumsum()
+    else:
+        df["saldo"] = df["credito"].cumsum() - df["debito"].cumsum()
+
     df.loc[df["debito"] > 0, "signo"] = "debito"
     df.loc[df["credito"] > 0, "signo"] = "credito"
-
-# ---------- Caso 2: PDF SIN saldo por línea ----------
 else:
     saldos, debitos, creditos, signos = [], [], [], []
     saldo = float(saldo_anterior) if not np.isnan(saldo_anterior) else 0.0
@@ -350,7 +369,7 @@ else:
     df["credito"] = creditos
     df["signo"] = signos
 
-# Excluir saldo final como movimiento
+# Excluir saldo final como movimiento (por si aparece como renglón)
 df = df[~df["desc_norm"].str.upper().str.contains("SALDO AL|SALDO FINAL", na=False)]
 df = df[~((df["desc_norm"] == "") & (df["debito"] > 0) & (df["orden"] > df["orden"].max() - 2))]
 
@@ -360,33 +379,35 @@ df["Clasificación"] = df.apply(
         str(r.get("descripcion", "")),
         str(r.get("desc_norm", "")),
         float(r.get("debito", 0.0)),
-        float(r.get("credito", 0.0))
+        float(r.get("credito", 0.0)),
     ),
-    axis=1
+    axis=1,
 )
+
+df_sorted = df.reset_index(drop=True)
 
 # ===========================
 #   RESUMEN / CONCILIACIÓN
 # ===========================
-df_sorted = df.reset_index(drop=True)
+st.markdown("---")
+st.subheader("Resumen del período")
 
-saldo_inicial = float(df_sorted["saldo"].iloc[0])
-total_debitos = float(df_sorted["debito"].sum())
-total_creditos = float(df_sorted["credito"].sum())
+saldo_inicial = float(df_sorted["saldo"].iloc[0]) if not df_sorted.empty else 0.0
+total_debitos = float(df_sorted["debito"].sum()) if not df_sorted.empty else 0.0
+total_creditos = float(df_sorted["credito"].sum()) if not df_sorted.empty else 0.0
 
-saldo_final_visto = float(saldo_final_pdf) if not np.isnan(saldo_final_pdf) else float(df_sorted["saldo"].iloc[-1])
+saldo_final_visto = float(saldo_final_pdf) if not np.isnan(saldo_final_pdf) else (float(df_sorted["saldo"].iloc[-1]) if not df_sorted.empty else 0.0)
 saldo_final_calculado = saldo_inicial + total_creditos - total_debitos
 diferencia = saldo_final_calculado - saldo_final_visto
 cuadra = abs(diferencia) < 0.01
 
-st.subheader("Resumen del período")
 c1, c2, c3 = st.columns(3)
 with c1:
     st.metric("Saldo inicial", f"$ {fmt_ar(saldo_inicial)}")
 with c2:
-    st.metric("Créditos (+)", f"$ {fmt_ar(total_creditos)}")
+    st.metric("Total créditos (+)", f"$ {fmt_ar(total_creditos)}")
 with c3:
-    st.metric("Débitos (–)", f"$ {fmt_ar(total_debitos)}")
+    st.metric("Total débitos (–)", f"$ {fmt_ar(total_debitos)}")
 
 c4, c5, c6 = st.columns(3)
 with c4:
@@ -398,35 +419,37 @@ with c6:
 
 if cuadra:
     st.success("Conciliado.")
+    st.caption("Conciliación: OK")
 else:
     st.error("No cuadra la conciliación (revisar signos/clasificación).")
-
-st.markdown("---")
+    st.caption("Conciliación: REVISAR")
 
 # ===========================
 #   RESUMEN OPERATIVO
 # ===========================
+st.markdown("---")
 st.subheader("Resumen Operativo: Registración Módulo IVA")
 
-iva21 = float(df_sorted.loc[df_sorted["Clasificación"].eq("IVA 21% (sobre comisiones)"), "debito"].sum())
-iva105 = float(df_sorted.loc[df_sorted["Clasificación"].eq("IVA 10,5% (sobre comisiones)"), "debito"].sum())
+iva21 = float(df_sorted.loc[df_sorted["Clasificación"].eq("IVA 21% (sobre comisiones)"), "debito"].sum()) if not df_sorted.empty else 0.0
+iva105 = float(df_sorted.loc[df_sorted["Clasificación"].eq("IVA 10,5% (sobre comisiones)"), "debito"].sum()) if not df_sorted.empty else 0.0
 net21 = round(iva21 / 0.21, 2) if iva21 else 0.0
 net105 = round(iva105 / 0.105, 2) if iva105 else 0.0
 
-percep_iva = float(df_sorted.loc[df_sorted["Clasificación"].eq("Percepciones de IVA"), "debito"].sum())
-ley_25413 = float(df_sorted.loc[df_sorted["Clasificación"].eq("LEY 25.413"), "debito"].sum())
-sircreb = float(df_sorted.loc[df_sorted["Clasificación"].eq("SIRCREB"), "debito"].sum())
+percep_iva = float(df_sorted.loc[df_sorted["Clasificación"].eq("Percepciones de IVA"), "debito"].sum()) if not df_sorted.empty else 0.0
+ley_25413 = float(df_sorted.loc[df_sorted["Clasificación"].eq("LEY 25.413"), "debito"].sum()) if not df_sorted.empty else 0.0
+sircreb = float(df_sorted.loc[df_sorted["Clasificación"].eq("SIRCREB"), "debito"].sum()) if not df_sorted.empty else 0.0
 
-# Total gastos bancarios
-gastos_mask = df_sorted["Clasificación"].isin([
-    "IVA 21% (sobre comisiones)",
-    "IVA 10,5% (sobre comisiones)",
-    "LEY 25.413",
-    "SIRCREB",
-    "Gastos por comisiones",
-    "Débito automático"
-])
-total_gastos = float(df_sorted.loc[gastos_mask, "debito"].sum())
+gastos_mask = df_sorted["Clasificación"].isin(
+    [
+        "IVA 21% (sobre comisiones)",
+        "IVA 10,5% (sobre comisiones)",
+        "LEY 25.413",
+        "SIRCREB",
+        "Gastos por comisiones",
+        "Débito automático",
+    ]
+)
+total_gastos = float(df_sorted.loc[gastos_mask, "debito"].sum()) if not df_sorted.empty else 0.0
 
 m1, m2, m3 = st.columns(3)
 with m1:
@@ -454,183 +477,177 @@ with o3:
 
 st.metric("Total Gastos Bancarios", f"$ {fmt_ar(total_gastos)}")
 
+# ===========================
+#   CRÉDITOS (LISTADO) + PRÉSTAMOS (LISTADO) EN EXPANDERS (tipo BNA)
+# ===========================
 st.markdown("---")
 
-# ===========================
-#   LISTADO DE CRÉDITOS (INGRESOS)
-# ===========================
-st.subheader("Créditos (ingresos) – listado")
+df_creditos = df_sorted[(df_sorted["credito"] > 0) & (df_sorted["desc_norm"].ne("SALDO ANTERIOR"))].copy()
 
-df_creditos = df_sorted[
-    (df_sorted["credito"] > 0) &
-    (df_sorted["desc_norm"].ne("SALDO ANTERIOR"))
-].copy()
+with st.expander("Créditos (ingresos) – listado", expanded=False):
+    if df_creditos.empty:
+        st.info("No hay créditos (ingresos) en este período.")
+    else:
+        st.metric("Total créditos (ingresos)", f"$ {fmt_ar(float(df_creditos['credito'].sum()))}")
+        df_creditos_view = df_creditos[["fecha", "descripcion", "credito", "saldo"]].copy()
+        for c in ("credito", "saldo"):
+            df_creditos_view[c] = df_creditos_view[c].map(fmt_ar)
+        st.dataframe(df_creditos_view, use_container_width=True)
 
-if df_creditos.empty:
-    st.info("No hay créditos (ingresos) en este período.")
-else:
-    st.metric("Total créditos (ingresos)", f"$ {fmt_ar(float(df_creditos['credito'].sum()))}")
-
-    df_creditos_view = df_creditos[["fecha", "descripcion", "credito", "saldo"]].copy()
-    for c in ("credito", "saldo"):
-        df_creditos_view[c] = df_creditos_view[c].map(fmt_ar)
-    st.dataframe(df_creditos_view, use_container_width=True)
-
-    st.markdown("**Descarga del listado de créditos (ingresos)**")
-    try:
-        import xlsxwriter
-        out_c = io.BytesIO()
-        with pd.ExcelWriter(out_c, engine="xlsxwriter") as writer:
-            df_creditos.to_excel(writer, index=False, sheet_name="Creditos")
-        st.download_button(
-            "📥 Descargar créditos (Excel)",
-            data=out_c.getvalue(),
-            file_name="creditos_santafe.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    except Exception:
-        csv_c = df_creditos.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "📥 Descargar créditos (CSV)",
-            data=csv_c,
-            file_name="creditos_santafe.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-
-st.markdown("---")
-
-# ===========================
-#   PRÉSTAMOS (SOLO CUOTAS / ACREDITACIONES / PRÉSTAMO EXPLÍCITO)
-# ===========================
-st.subheader("Préstamos detectados (solo cuotas / acreditaciones / préstamo explícito)")
+        st.markdown("**Descarga del listado de créditos (ingresos)**")
+        try:
+            import xlsxwriter
+            out_c = io.BytesIO()
+            with pd.ExcelWriter(out_c, engine="xlsxwriter") as writer:
+                df_creditos.to_excel(writer, index=False, sheet_name="Creditos")
+            st.download_button(
+                "📥 Descargar créditos (Excel)",
+                data=out_c.getvalue(),
+                file_name="creditos_santafe.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception:
+            csv_c = df_creditos.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "📥 Descargar créditos (CSV)",
+                data=csv_c,
+                file_name="creditos_santafe.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
 df_sorted["Evento préstamo"] = df_sorted.apply(
     lambda r: clasificar_prestamo(
         str(r.get("desc_norm", "")),
         float(r.get("debito", 0.0)),
-        float(r.get("credito", 0.0))
+        float(r.get("credito", 0.0)),
     ),
-    axis=1
+    axis=1,
 )
-
 df_prest = df_sorted[df_sorted["Evento préstamo"].ne("")].copy()
 
-if df_prest.empty:
-    st.info("No se detectaron movimientos de préstamos en este período (según reglas actuales).")
-else:
-    total_acreditaciones = float(df_prest.loc[df_prest["Evento préstamo"].eq("Acreditación préstamo"), "credito"].sum())
-    total_cuotas = float(df_prest.loc[df_prest["Evento préstamo"].eq("Cuota préstamo"), "debito"].sum())
-    total_debitos_prest = float(df_prest["debito"].sum())
-    total_creditos_prest = float(df_prest["credito"].sum())
-    neto_prest = total_creditos_prest - total_debitos_prest
+with st.expander("Préstamos detectados (solo cuotas / acreditaciones / préstamo explícito)", expanded=False):
+    if df_prest.empty:
+        st.info("No se detectaron movimientos de préstamos en este período (según reglas actuales).")
+    else:
+        total_acreditaciones = float(df_prest.loc[df_prest["Evento préstamo"].eq("Acreditación préstamo"), "credito"].sum())
+        total_cuotas = float(df_prest.loc[df_prest["Evento préstamo"].eq("Cuota préstamo"), "debito"].sum())
+        total_debitos_prest = float(df_prest["debito"].sum())
+        total_creditos_prest = float(df_prest["credito"].sum())
+        neto_prest = total_creditos_prest - total_debitos_prest
 
-    p1, p2, p3, p4 = st.columns(4)
-    with p1:
-        st.metric("Acreditaciones (prést.)", f"$ {fmt_ar(total_acreditaciones)}")
-    with p2:
-        st.metric("Cuotas (prést.)", f"$ {fmt_ar(total_cuotas)}")
-    with p3:
-        st.metric("Débitos totales (prést.)", f"$ {fmt_ar(total_debitos_prest)}")
-    with p4:
-        st.metric("Neto (cr - db)", f"$ {fmt_ar(neto_prest)}")
+        p1, p2, p3, p4 = st.columns(4)
+        with p1:
+            st.metric("Acreditaciones (prést.)", f"$ {fmt_ar(total_acreditaciones)}")
+        with p2:
+            st.metric("Cuotas (prést.)", f"$ {fmt_ar(total_cuotas)}")
+        with p3:
+            st.metric("Débitos totales (prést.)", f"$ {fmt_ar(total_debitos_prest)}")
+        with p4:
+            st.metric("Neto (cr - db)", f"$ {fmt_ar(neto_prest)}")
 
-    df_prest_view = df_prest[["fecha", "descripcion", "Evento préstamo", "debito", "credito", "saldo"]].copy()
-    for c in ("debito", "credito", "saldo"):
-        df_prest_view[c] = df_prest_view[c].map(fmt_ar)
-    st.dataframe(df_prest_view, use_container_width=True)
+        df_prest_view = df_prest[["fecha", "descripcion", "Evento préstamo", "debito", "credito", "saldo"]].copy()
+        for c in ("debito", "credito", "saldo"):
+            df_prest_view[c] = df_prest_view[c].map(fmt_ar)
+        st.dataframe(df_prest_view, use_container_width=True)
 
-    st.markdown("**Descarga del listado de préstamos**")
-    try:
-        import xlsxwriter
-        out_p = io.BytesIO()
-        with pd.ExcelWriter(out_p, engine="xlsxwriter") as writer:
-            df_prest.to_excel(writer, index=False, sheet_name="Prestamos")
-        st.download_button(
-            "📥 Descargar préstamos (Excel)",
-            data=out_p.getvalue(),
-            file_name="prestamos_santafe.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    except Exception:
-        csv_p = df_prest.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "📥 Descargar préstamos (CSV)",
-            data=csv_p,
-            file_name="prestamos_santafe.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        st.markdown("**Descarga del listado de préstamos**")
+        try:
+            import xlsxwriter
+            out_p = io.BytesIO()
+            with pd.ExcelWriter(out_p, engine="xlsxwriter") as writer:
+                df_prest.to_excel(writer, index=False, sheet_name="Prestamos")
+            st.download_button(
+                "📥 Descargar préstamos (Excel)",
+                data=out_p.getvalue(),
+                file_name="prestamos_santafe.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception:
+            csv_p = df_prest.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "📥 Descargar préstamos (CSV)",
+                data=csv_p,
+                file_name="prestamos_santafe.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
+# ===========================
+#   DETALLE (EN EXPANDER, NO “ANCHO”)
+# ===========================
 st.markdown("---")
+with st.expander("Detalle de movimientos", expanded=False):
+    mostrar_tecnicas = st.checkbox("Mostrar columnas técnicas", value=False)
 
-# ===========================
-#   DETALLE DE MOVIMIENTOS
-# ===========================
-st.subheader("Detalle de movimientos")
-df_view = df_sorted.copy()
-for c in ("debito", "credito", "saldo"):
-    df_view[c] = df_view[c].map(fmt_ar)
-st.dataframe(df_view, use_container_width=True)
+    cols_base = ["fecha", "descripcion", "debito", "credito", "saldo", "signo", "Clasificación"]
+    if "Evento préstamo" in df_sorted.columns:
+        cols_base.append("Evento préstamo")
+
+    df_view = df_sorted.copy()
+    for c in ("debito", "credito", "saldo"):
+        if c in df_view.columns:
+            df_view[c] = df_view[c].map(fmt_ar)
+
+    if mostrar_tecnicas:
+        st.dataframe(df_view, use_container_width=True)
+    else:
+        cols_base = [c for c in cols_base if c in df_view.columns]
+        st.dataframe(df_view[cols_base], use_container_width=True)
 
 # ===========================
 #   DESCARGAS (EXCEL/CSV)
 # ===========================
+st.markdown("---")
 st.subheader("Descargar")
+
 try:
     import xlsxwriter
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df_sorted.to_excel(writer, index=False, sheet_name="Movimientos")
-
         if not df_creditos.empty:
             df_creditos.to_excel(writer, index=False, sheet_name="Creditos")
-
         if not df_prest.empty:
             df_prest.to_excel(writer, index=False, sheet_name="Prestamos")
 
         wb = writer.book
-
-        # Formatos base
         money_fmt = wb.add_format({"num_format": "#,##0.00"})
         date_fmt = wb.add_format({"num_format": "dd/mm/yyyy"})
 
-        # Ajuste columnas en Movimientos
+        # Movimientos
         ws = writer.sheets["Movimientos"]
         for idx, col in enumerate(df_sorted.columns, start=0):
             col_values = df_sorted[col].astype(str)
             max_len = max(len(col), *(len(v) for v in col_values))
             ws.set_column(idx, idx, min(max_len + 2, 40))
-
         for c in ["debito", "credito", "saldo"]:
             if c in df_sorted.columns:
                 j = df_sorted.columns.get_loc(c)
                 ws.set_column(j, j, 16, money_fmt)
-
         if "fecha" in df_sorted.columns:
             j = df_sorted.columns.get_loc("fecha")
             ws.set_column(j, j, 14, date_fmt)
 
-        # Ajuste columnas en Creditos
+        # Creditos
         if not df_creditos.empty:
             ws_c = writer.sheets["Creditos"]
             for idx, col in enumerate(df_creditos.columns, start=0):
                 col_values = df_creditos[col].astype(str)
                 max_len = max(len(col), *(len(v) for v in col_values))
                 ws_c.set_column(idx, idx, min(max_len + 2, 45))
-            if "credito" in df_creditos.columns:
-                j = df_creditos.columns.get_loc("credito")
-                ws_c.set_column(j, j, 16, money_fmt)
-            if "saldo" in df_creditos.columns:
-                j = df_creditos.columns.get_loc("saldo")
-                ws_c.set_column(j, j, 16, money_fmt)
+            for c in ["credito", "saldo"]:
+                if c in df_creditos.columns:
+                    j = df_creditos.columns.get_loc(c)
+                    ws_c.set_column(j, j, 16, money_fmt)
             if "fecha" in df_creditos.columns:
                 j = df_creditos.columns.get_loc("fecha")
                 ws_c.set_column(j, j, 14, date_fmt)
 
-        # Ajuste columnas en Prestamos
+        # Prestamos
         if not df_prest.empty:
             ws_p = writer.sheets["Prestamos"]
             for idx, col in enumerate(df_prest.columns, start=0):
@@ -650,8 +667,9 @@ try:
         data=output.getvalue(),
         file_name="resumen_bancario_santafe.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        use_container_width=True,
     )
+
 except Exception:
     csv_bytes = df_sorted.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
@@ -659,13 +677,15 @@ except Exception:
         data=csv_bytes,
         file_name="resumen_bancario_santafe.csv",
         mime="text/csv",
-        use_container_width=True
+        use_container_width=True,
     )
 
 # ===========================
 #   PDF DEL RESUMEN OPERATIVO
 # ===========================
+st.markdown("---")
 st.subheader("Descargar PDF del Resumen Operativo")
+
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -676,24 +696,15 @@ try:
     doc = SimpleDocTemplate(
         pdf_buffer,
         pagesize=A4,
-        leftMargin=40, rightMargin=40,
-        topMargin=40, bottomMargin=40
+        leftMargin=40,
+        rightMargin=40,
+        topMargin=40,
+        bottomMargin=40,
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "Titulo",
-        parent=styles["Heading1"],
-        alignment=1,          # centrado
-        spaceAfter=12
-    )
-    subtitle_style = ParagraphStyle(
-        "Subtitulo",
-        parent=styles["Heading2"],
-        alignment=1,
-        fontSize=12,
-        spaceAfter=12
-    )
+    title_style = ParagraphStyle("Titulo", parent=styles["Heading1"], alignment=1, spaceAfter=12)
+    subtitle_style = ParagraphStyle("Subtitulo", parent=styles["Heading2"], alignment=1, fontSize=12, spaceAfter=12)
     normal = styles["Normal"]
 
     story = []
@@ -712,7 +723,6 @@ try:
     story.append(Paragraph("Registración Módulo IVA", subtitle_style))
     story.append(Spacer(1, 12))
 
-    # Resumen del período
     story.append(Paragraph("<b>Resumen del período</b>", normal))
     story.append(Spacer(1, 6))
 
@@ -727,19 +737,22 @@ try:
     ]
 
     tabla_resumen = Table(tabla_resumen_data, colWidths=[220, 120])
-    tabla_resumen.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-    ]))
+    tabla_resumen.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ]
+        )
+    )
     story.append(tabla_resumen)
     story.append(Spacer(1, 16))
 
-    # Resumen Operativo IVA
     story.append(Paragraph("<b>Detalle para Módulo IVA</b>", normal))
     story.append(Spacer(1, 6))
 
@@ -753,27 +766,30 @@ try:
     ]
 
     tabla_iva = Table(tabla_iva_data, colWidths=[200, 80, 80, 80])
-    tabla_iva.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-    ]))
+    tabla_iva.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ]
+        )
+    )
     story.append(tabla_iva)
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph(
-        f"<b>Total gastos bancarios imputables a resultados:</b> $ {fmt_ar(total_gastos)}",
-        normal
-    ))
+    story.append(Paragraph(f"<b>Total gastos bancarios imputables a resultados:</b> $ {fmt_ar(total_gastos)}", normal))
 
     story.append(Spacer(1, 18))
-    story.append(Paragraph(
-        "Informe generado con IA Resumen Bancario – AIE San Justo. Uso interno exclusivamente.",
-        ParagraphStyle("Pie", parent=normal, fontSize=8, textColor=colors.grey)
-    ))
+    story.append(
+        Paragraph(
+            "Informe generado con IA Resumen Bancario – AIE San Justo. Uso interno exclusivamente.",
+            ParagraphStyle("Pie", parent=normal, fontSize=8, textColor=colors.grey),
+        )
+    )
 
     doc.build(story)
     pdf_bytes = pdf_buffer.getvalue()
