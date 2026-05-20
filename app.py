@@ -9,11 +9,55 @@ import streamlit as st
 
 # --- UI / assets ---
 HERE = Path(__file__).parent
-LOGO = HERE / "logo_aie.png"
-FAVICON = HERE / "favicon-aie.ico"
-st.set_page_config(page_title="IA Resumen Bancario", page_icon=str(FAVICON) if FAVICON.exists() else None)
-if LOGO.exists():
+
+def asset_path(*names: str):
+    """Busca assets al lado del .py y también dentro de /assets."""
+    candidates = []
+    for name in names:
+        candidates.append(HERE / name)
+        candidates.append(HERE / "assets" / name)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+LOGO = asset_path("logo_aie.png", "logo-aie.png", "logo.png")
+FAVICON = asset_path("favicon-aie.ico", "favicon_aie.ico", "favicon.ico", "favicon-aie.png", "favicon.png")
+
+st.set_page_config(
+    page_title="IA Resumen Bancario - Banco Santa Fe",
+    page_icon=str(FAVICON) if FAVICON else None,
+    layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+      .aie-footer {
+        margin-top: 2.5rem;
+        padding: 0.9rem 0 0.2rem 0;
+        border-top: 1px solid rgba(49,51,63,0.18);
+        color: rgba(49,51,63,0.68);
+        font-size: 0.86rem;
+        text-align: center;
+      }
+      div[data-testid="stImage"] img {
+        max-width: 200px;
+        height: auto;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+if LOGO:
     st.image(str(LOGO), width=200)
+else:
+    st.warning(
+        "No se encontró el logo. Guardá logo_aie.png en la misma carpeta del archivo .py "
+        "o dentro de una carpeta assets/."
+    )
+
 st.title("IA Resumen Bancario - Banco Santa Fe sin subtotales")
 
 # --- deps diferidas ---
@@ -1120,10 +1164,19 @@ def bna_extract_meta(file_like):
     return {"account_number": acc, "cbu": cbu, "period_start": pstart, "period_end": pend}
 
 
+
+
+def render_footer():
+    st.markdown(
+        '<div class="aie-footer">Herramienta para uso interno AIE San Justo | Developer Alfonso Alderete</div>',
+        unsafe_allow_html=True,
+    )
+
 # ---------- UI principal ----------
 uploaded = st.file_uploader("Subí un PDF del resumen bancario", type=["pdf"])
 if uploaded is None:
     st.info("La app no almacena datos, toda la información está protegida.")
+    render_footer()
     st.stop()
 
 data = uploaded.read()
@@ -1159,3 +1212,5 @@ if sf_accounts:
             st.markdown("")
 else:
     render_account_report(_bank_slug, "Caja de Ahorros Pesos", "s/n", "santafe-unica", all_lines)
+
+render_footer()
