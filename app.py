@@ -373,6 +373,103 @@ def parse_lines(lines) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def santafe_mov_sign(desc: str):
+    """
+    Banco Santa Fe sin subtotales: muchas líneas traen solo importe y el saldo
+    aparece cada varias operaciones. Para no perder gastos, se clasifica el
+    signo por concepto y luego se controla contra el saldo.
+    """
+    n = normalize_desc(desc)
+
+    debit_tokens = (
+        "TRLINKEX", "COMPRATD", "COMPRA EN COMERCIO", "IMP/SERV",
+        "IVA GRAL", "IVAPER", "IVA PERCEP", "COM.MOVI", "COMIS",
+        "EXTEFTVO", "EXTRACCION", "DEBINS", "DB.INMEDIATO",
+        "DEB.AUT", "DB-", "PAGO", "IMPTRANS", "SIRCREB",
+    )
+    credit_tokens = (
+        "CR-DN", "CR DN", "INT.GDOS", "INTERESES GANADOS", "TRANLINK",
+        "DEP.EFECTIVO", "DEPOSITO EFECTIVO", "CR-DEPEF", "CR DEPEF",
+        "ACREDIT", "HABER",
+    )
+
+    if any(t in n for t in debit_tokens):
+        return "D"
+    if any(t in n for t in credit_tokens):
+        return "C"
+    return None
+
+
+def parse_lines_santafe_sin_subtotales(lines) -> pd.DataFrame:
+    """
+    Variante Banco Santa Fe: procesa líneas con 1 importe (movimiento sin saldo)
+    y líneas con 2 importes (movimiento + saldo). Esto evita perder gastos como:
+    IVA GRAL, IVA PERCEP RG 3337 y COM.MOVI.
+    """
+    rows = []
+    seq = 0
+
+    for ln in lines:
+        if not ln.strip():
+            continue
+
+        U = ln.upper()
+        if (
+            PER_PAGE_TITLE_PAT.search(ln)
+            or HEADER_ROW_PAT.search(ln)
+            or NON_MOV_PAT.search(ln)
+            or U.startswith("TRANSPORTE")
+            or U.startswith("SALDO AL:")
+            or U.startswith("LEY 25.413")
+            or "FECHA RESUMEN" in U
+            or "SALDO ULTIMO RESUMEN" in U
+        ):
+            continue
+
+        am = list(MONEY_RE.finditer(ln))
+        if len(am) < 1:
+            continue
+
+        d = DATE_RE.search(ln)
+        if not d or d.end() >= am[0].start():
+            continue
+
+        # 1 importe = movimiento sin saldo; 2 importes = movimiento + saldo.
+        if len(am) >= 2:
+            importe = normalize_money(am[-2].group(0))
+            saldo = normalize_money(am[-1].group(0))
+            first_money = am[0]
+        else:
+            importe = normalize_money(am[-1].group(0))
+            saldo = np.nan
+            first_money = am[0]
+
+        desc = ln[d.end(): first_money.start()].strip()
+        signo = santafe_mov_sign(desc)
+
+        debito = 0.0
+        credito = 0.0
+        if signo == "D":
+            debito = abs(float(importe))
+        elif signo == "C":
+            credito = abs(float(importe))
+
+        seq += 1
+        rows.append({
+            "fecha": pd.to_datetime(d.group(0), dayfirst=True, errors="coerce"),
+            "descripcion": desc,
+            "desc_norm": normalize_desc(desc),
+            "debito": debito,
+            "credito": credito,
+            "importe": float(debito - credito),
+            "saldo": saldo,
+            "pagina": 0,
+            "orden": seq
+        })
+
+    return pd.DataFrame(rows)
+
+
 # ---------- Saldos ----------
 def _only_one_amount(line: str) -> bool:
     return len(list(MONEY_RE.finditer(line))) == 1
@@ -393,7 +490,18 @@ def find_saldo_final_from_lines(lines):
                 saldo = _first_amount_value(ln)
                 if pd.notna(fecha) and not np.isnan(saldo):
                     return fecha, saldo
-    # 2) BNA: "SALDO FINAL" sin fecha
+
+    # 2) Santa Fe: "Saldo al: 30/04/2026 8.495.056,44"
+    for ln in reversed(lines):
+        U = ln.upper()
+        if U.startswith("SALDO AL:") or U.startswith("SALDO AL "):
+            d = DATE_RE.search(ln)
+            saldo = _first_amount_value(ln)
+            fecha = pd.to_datetime(d.group(0), dayfirst=True, errors="coerce") if d else pd.NaT
+            if not np.isnan(saldo):
+                return fecha, saldo
+
+    # 3) BNA: "SALDO FINAL" sin fecha
     for ln in reversed(lines):
         if "SALDO FINAL" in ln.upper() and _only_one_amount(ln):
             saldo = _first_amount_value(ln)
@@ -584,9 +692,23 @@ def render_account_report(
     st.markdown("---")
     st.subheader(f"{account_title} · Nro {account_number}")
 
-    df = parse_lines(lines)
+    if banco_slug == "santafe":
+        df = parse_lines_santafe_sin_subtotales(lines)
+    else:
+        df = parse_lines(lines)
+
     fecha_cierre, saldo_final_pdf = find_saldo_final_from_lines(lines)
     saldo_anterior = find_saldo_anterior_from_lines(lines)
+
+    # En Santa Fe sin subtotales se cargan movimientos de una sola columna.
+    # No se debe recalcular débito/crédito por delta de saldo, porque el saldo
+    # aparece recién cada varias operaciones y se perderían gastos intermedios.
+    usa_importes_directos = (
+        banco_slug == "santafe"
+        and not df.empty
+        and df["saldo"].isna().any()
+        and (df["debito"].sum() != 0 or df["credito"].sum() != 0)
+    )
 
     # Sin movimientos: mostrar saldos y conciliación
     if df.empty:
@@ -634,12 +756,21 @@ def render_account_report(
         }])
         df = pd.concat([apertura, df], ignore_index=True)
 
-    # Débito/Crédito por delta de saldo
+    # Débito/Crédito
     df = df.sort_values(["fecha", "orden"]).reset_index(drop=True)
-    df["delta_saldo"] = df["saldo"].diff()
-    df["debito"]  = np.where(df["delta_saldo"] < 0, -df["delta_saldo"], 0.0)
-    df["credito"] = np.where(df["delta_saldo"] > 0,  df["delta_saldo"], 0.0)
-    df["importe"] = df["debito"] - df["credito"]  # signo contable
+
+    if usa_importes_directos:
+        # Santa Fe sin subtotales: el signo ya fue asignado por concepto.
+        df["delta_saldo"] = df["credito"] - df["debito"]
+        saldo_base = float(saldo_anterior) if not np.isnan(saldo_anterior) else 0.0
+        df["saldo"] = saldo_base + df["delta_saldo"].cumsum()
+        df["importe"] = df["debito"] - df["credito"]  # signo contable
+    else:
+        # Genérico/Macro/BNA: se conserva la lógica original por delta de saldo.
+        df["delta_saldo"] = df["saldo"].diff()
+        df["debito"]  = np.where(df["delta_saldo"] < 0, -df["delta_saldo"], 0.0)
+        df["credito"] = np.where(df["delta_saldo"] > 0,  df["delta_saldo"], 0.0)
+        df["importe"] = df["debito"] - df["credito"]  # signo contable
 
     # Clasificación
     df["Clasificación"] = df.apply(
