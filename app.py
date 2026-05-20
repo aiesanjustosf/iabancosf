@@ -27,12 +27,22 @@ FAVICON = asset_path("favicon-aie.ico", "favicon_aie.ico", "favicon.ico", "favic
 st.set_page_config(
     page_title="IA Resumen Bancario - Banco Santa Fe",
     page_icon=str(FAVICON) if FAVICON else None,
-    layout="wide",
+    layout="centered",
 )
 
 st.markdown(
     """
     <style>
+      /* Mantiene el contenido centrado y con ancho similar a las otras apps */
+      section.main > div,
+      div.block-container {
+        max-width: 980px;
+        margin-left: auto;
+        margin-right: auto;
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+      }
+
       .aie-footer {
         margin-top: 2.5rem;
         padding: 0.9rem 0 0.2rem 0;
@@ -41,6 +51,7 @@ st.markdown(
         font-size: 0.86rem;
         text-align: center;
       }
+
       div[data-testid="stImage"] img {
         max-width: 200px;
         height: auto;
