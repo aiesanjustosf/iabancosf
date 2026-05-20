@@ -14,7 +14,7 @@ FAVICON = HERE / "favicon-aie.ico"
 st.set_page_config(page_title="IA Resumen Bancario", page_icon=str(FAVICON) if FAVICON.exists() else None)
 if LOGO.exists():
     st.image(str(LOGO), width=200)
-st.title("IA Resumen Bancario VER SI ES SANTA FE SIN SUBTOTALES")
+st.title("IA Resumen Bancario - Banco Santa Fe sin subtotales")
 
 # --- deps diferidas ---
 try:
@@ -60,6 +60,10 @@ INFO_HEADER    = re.compile(r"INFORMACI[ÓO]N\s+DE\s+SU/S\s+CUENTA/S", re.IGNORE
 # ---- Banco de Santa Fe (Consolidado de cuentas) ----
 SF_ACC_LINE_RE = re.compile(
     r"\b(Cuenta\s+Corriente\s+Pesos|Cuenta\s+Corriente\s+En\s+D[óo]lares|Caja\s+de\s+Ahorro\s+Pesos|Caja\s+de\s+Ahorro\s+En\s+D[óo]lares)\s+Nro\.?\s*([0-9][0-9./-]*)",
+    re.IGNORECASE
+)
+SF_CUENTA_SIMPLE_RE = re.compile(
+    r"\bSANTA\s+FE\s+Cuenta:\s*([0-9][0-9\s./-]*)",
     re.IGNORECASE
 )
 
@@ -386,11 +390,12 @@ def santafe_mov_sign(desc: str):
         "IVA GRAL", "IVAPER", "IVA PERCEP", "COM.MOVI", "COMIS",
         "EXTEFTVO", "EXTRACCION", "DEBINS", "DB.INMEDIATO",
         "DEB.AUT", "DB-", "PAGO", "IMPTRANS", "SIRCREB",
+        "SEGUROS", "QUALIA",
     )
     credit_tokens = (
         "CR-DN", "CR DN", "INT.GDOS", "INTERESES GANADOS", "TRANLINK",
-        "DEP.EFECTIVO", "DEPOSITO EFECTIVO", "CR-DEPEF", "CR DEPEF",
-        "ACREDIT", "HABER",
+        "DPTOEFEC", "DPTO EFECTIVO", "DEP.EFECTIVO", "DEPOSITO EFECTIVO",
+        "TRANSACD", "SNP-TRMI", "SNP-TRANSF", "CR-DEPEF", "CR DEPEF", "ACREDIT", "HABER",
     )
 
     if any(t in n for t in debit_tokens):
@@ -625,8 +630,18 @@ def clasificar(desc: str, desc_norm: str, deb: float, cre: float) -> str:
        ("COMOPREM" in n) or ("COMVCAUT" in n) or ("COMTRSIT" in n) or ("COM.NEGO" in n) or ("CO.EXCESO" in n) or ("COM." in n):
         return "Gastos por comisiones"
 
-    # Débitos automáticos / Seguros
-    if ("DB-SNP" in n) or ("DEB.AUT" in n) or ("DEB.AUTOM" in n) or ("SEGUROS" in n) or ("GTOS SEG" in n):
+    # Gastos Banco Santa Fe sin subtotales
+    if ("COM.MOVI" in n) or ("COM MOVI" in n) or ("COMIS OPER POR CAJA" in n) or ("COMIS OPER" in n):
+        return "Gastos por comisiones"
+
+    if ("SEGUROS" in n) or ("QUALIA" in n) or ("GTOS SEG" in n):
+        return "Gastos exentos"
+
+    if ("IMP/SERV" in n) or ("PAGO IMP/SERV" in n):
+        return "Pago de impuestos/servicios"
+
+    # Débitos automáticos
+    if ("DB-SNP" in n) or ("DEB.AUT" in n) or ("DEB.AUTOM" in n):
         return "Débito automático"
     if ("DEBITO INMEDIATO" in u) or ("DEBIN" in u):
         return "Débito automático"
@@ -817,8 +832,19 @@ def render_account_report(
     iva105_mask = df_sorted["Clasificación"].eq("IVA 10,5% (sobre comisiones)")
     iva21  = float(df_sorted.loc[iva21_mask,  "debito"].sum())
     iva105 = float(df_sorted.loc[iva105_mask, "debito"].sum())
-    net21  = round(iva21  / 0.21,  2) if iva21  else 0.0
+
+    gastos_comisiones = float(df_sorted.loc[df_sorted["Clasificación"].eq("Gastos por comisiones"), "debito"].sum())
+    gastos_exentos = float(df_sorted.loc[df_sorted["Clasificación"].eq("Gastos exentos"), "debito"].sum())
+    pagos_imp_serv = float(df_sorted.loc[df_sorted["Clasificación"].eq("Pago de impuestos/servicios"), "debito"].sum())
+
+    # Si el PDF trae la comisión bancaria explícita (COM.MOVI), se usa ese neto real.
+    # Si no aparece, se calcula por IVA para mantener compatibilidad con resúmenes anteriores.
+    net21_calc = round(iva21 / 0.21, 2) if iva21 else 0.0
+    net21 = gastos_comisiones if gastos_comisiones else net21_calc
     net105 = round(iva105 / 0.105, 2) if iva105 else 0.0
+
+    diferencia_neto_iva21 = round(net21_calc - gastos_comisiones, 2) if iva21 and gastos_comisiones else 0.0
+
     percep_iva = float(df_sorted.loc[df_sorted["Clasificación"].eq("Percepciones de IVA"), "debito"].sum())
     ley_mask = df_sorted["Clasificación"].eq("LEY 25.413")
     ley_25413_debitos = float(df_sorted.loc[ley_mask, "debito"].sum())
@@ -841,6 +867,14 @@ def render_account_report(
     with o1: st.metric("Percepciones de IVA (RG 3337 / RG 2408)", f"$ {fmt_ar(percep_iva)}")
     with o2: st.metric("Ley 25.413", f"$ {fmt_ar(ley_25413)}")
     with o3: st.metric("SIRCREB", f"$ {fmt_ar(sircreb)}")
+
+    g1, g2, g3 = st.columns(3)
+    with g1: st.metric("Gastos/comisiones detectados", f"$ {fmt_ar(gastos_comisiones)}")
+    with g2: st.metric("Gastos exentos", f"$ {fmt_ar(gastos_exentos)}")
+    with g3: st.metric("Pagos imp./servicios", f"$ {fmt_ar(pagos_imp_serv)}")
+
+    if diferencia_neto_iva21:
+        st.caption(f"Control IVA 21%: neto por IVA = $ {fmt_ar(net21_calc)} | comisión detectada = $ {fmt_ar(gastos_comisiones)} | diferencia = $ {fmt_ar(diferencia_neto_iva21)}")
 
     # Tabla (grilla) con números formateados
     st.caption("Detalle de movimientos")
@@ -986,8 +1020,11 @@ def render_account_report(
                 ["Percepciones de IVA (RG 3337 / RG 2408)", fmt_ar(percep_iva)],
                 ["Ley 25.413",            fmt_ar(ley_25413)],
                 ["SIRCREB",               fmt_ar(sircreb)],
+                ["Gastos/comisiones detectados", fmt_ar(gastos_comisiones)],
+                ["Gastos exentos",        fmt_ar(gastos_exentos)],
+                ["Pagos imp./servicios",  fmt_ar(pagos_imp_serv)],
             ]
-            datos.append(["TOTAL", fmt_ar(net21 + iva21 + net105 + iva105 + percep_iva + ley_25413 + sircreb)])
+            datos.append(["TOTAL", fmt_ar(net21 + iva21 + net105 + iva105 + percep_iva + ley_25413 + sircreb + gastos_exentos + pagos_imp_serv)])
 
             tbl = Table(datos, colWidths=[300, 120])
             tbl.setStyle(TableStyle([
@@ -1018,17 +1055,25 @@ def render_account_report(
 # ---------- Banco Santa Fe: extraer Nro de cuenta desde “Consolidado de cuentas” ----------
 def santafe_extract_accounts(file_like):
     """
-    Busca líneas tipo: 'Cuenta Corriente Pesos Nro. 1646/00'
-    Devuelve lista de dicts [{'title': 'Cuenta Corriente Pesos', 'nro': '1646/00'}]
+    Detecta la cuenta en resúmenes Banco Santa Fe.
+    Soporta:
+    - Cuenta Corriente Pesos Nro. 1646/00
+    - SANTA FE Cuenta: 516 001 2387/10
     """
     items = []
     for _, ln in extract_all_lines(file_like):
         m = SF_ACC_LINE_RE.search(ln)
         if m:
-            title = " ".join(m.group(1).split())
-            nro   = m.group(2).strip()
-            items.append({"title": title.title(), "nro": nro})
-    # quitar duplicados preservando orden
+            title = " ".join(m.group(1).split()).title()
+            nro = " ".join(m.group(2).split())
+            items.append({"title": title, "nro": nro})
+            continue
+
+        m2 = SF_CUENTA_SIMPLE_RE.search(ln)
+        if m2:
+            nro = " ".join(m2.group(1).split())
+            items.append({"title": "Caja de Ahorros Pesos", "nro": nro})
+
     seen = set()
     uniq = []
     for it in items:
@@ -1095,84 +1140,22 @@ if not _bank_txt:
     )
     st.stop()
 
-_auto_bank_name = detect_bank_from_text(_bank_txt)
+# Esta versión queda fija para Banco Santa Fe sin subtotales.
+_bank_name = "Banco de Santa Fe"
+_bank_slug = "santafe"
+st.success("Banco de Santa Fe - versión sin subtotales")
 
-with st.expander("Opciones avanzadas (detección de banco)", expanded=False):
-    forced = st.selectbox(
-        "Forzar identificación del banco",
-        options=("Auto (detectar)", "Banco de Santa Fe", "Banco Macro", "Banco de la Nación Argentina"),
-        index=0,
-        help="Solo cambia la etiqueta informativa y el nombre de archivo."
-    )
+sf_accounts = santafe_extract_accounts(io.BytesIO(data))
+all_lines = [l for _, l in extract_all_lines(io.BytesIO(data))]
 
-_bank_name = forced if forced != "Auto (detectar)" else _auto_bank_name
-
-if _bank_name == "Banco Macro":
-    st.info(f"Detectado: {_bank_name}")
-elif _bank_name == "Banco de Santa Fe":
-    st.success(f"Detectado: {_bank_name}")
-elif _bank_name == "Banco de la Nación Argentina":
-    st.success(f"Detectado: {_bank_name}")
+if sf_accounts:
+    st.caption(f"Cuenta(s) detectada(s): {len(sf_accounts)}")
+    for i, acc in enumerate(sf_accounts, start=1):
+        title = acc["title"]
+        nro = acc["nro"]
+        acc_id = f"santafe-{re.sub(r'[^0-9A-Za-z]+', '_', nro)}"
+        render_account_report(_bank_slug, title, nro, acc_id, all_lines)
+        if i < len(sf_accounts):
+            st.markdown("")
 else:
-    st.warning("No se pudo identificar el banco automáticamente. Se intentará procesar.")
-
-_bank_slug = ("macro" if _bank_name == "Banco Macro"
-              else "santafe" if _bank_name == "Banco de Santa Fe"
-              else "nacion" if _bank_name == "Banco de la Nación Argentina"
-              else "generico")
-
-# --- Flujo por banco ---
-if _bank_name == "Banco Macro":
-    blocks = macro_split_account_blocks(io.BytesIO(data))
-    if not blocks:
-        st.warning("No se detectaron encabezados de cuenta en Macro. Se intentará procesar todo el PDF (podría mezclar cuentas).")
-        _lines = [l for _, l in extract_all_lines(io.BytesIO(data))]
-
-        render_account_report(_bank_slug, "CUENTA (PDF completo)", "s/n", "macro-pdf-completo", _lines)
-    else:
-        st.caption(f"Información de su/s Cuenta/s: {len(blocks)} cuenta(s) detectada(s).")
-        for b in blocks:
-            render_account_report(_bank_slug, b["titulo"], b["nro"], b["acc_id"], b["lines"])
-
-elif _bank_name == "Banco de Santa Fe":
-    sf_accounts = santafe_extract_accounts(io.BytesIO(data))
-    all_lines = [l for _, l in extract_all_lines(io.BytesIO(data))]
-
-    if sf_accounts:
-        st.caption(f"Consolidado de cuentas: {len(sf_accounts)} detectada(s).")
-        for i, acc in enumerate(sf_accounts, start=1):
-            title = acc["title"]
-            nro   = acc["nro"]
-            acc_id = f"santafe-{re.sub(r'[^0-9A-Za-z]+', '_', nro)}"
-            render_account_report(_bank_slug, title, nro, acc_id, all_lines)
-            if i < len(sf_accounts):
-                st.markdown("")
-    else:
-        render_account_report(_bank_slug, "CUENTA", "s/n", "generica-unica", all_lines)
-
-elif _bank_name == "Banco de la Nación Argentina":
-    meta = bna_extract_meta(io.BytesIO(data))
-    all_lines = [l for _, l in extract_all_lines(io.BytesIO(data))]
-    titulo = "CUENTA (BNA)"
-    nro = meta.get("account_number") or "s/n"
-    acc_id = f"bna-{re.sub(r'[^0-9A-Za-z]+', '_', nro)}"
-
-    # Meta visible
-    col1, col2, col3 = st.columns(3)
-    if meta.get("period_start") and meta.get("period_end"):
-        with col1: st.caption(f"Período: {meta['period_start']} al {meta['period_end']}")
-    if meta.get("account_number"):
-        with col2: st.caption(f"Nro. de cuenta: {meta['account_number']}")
-    if meta.get("cbu"):
-        with col3: st.caption(f"CBU: {meta['cbu']}")
-
-    # Extras BNA -> integrados al Resumen Operativo (por ahora solo se leen)
-    txt_full = _text_from_pdf(io.BytesIO(data))
-    bna_extras = bna_extract_gastos_finales(txt_full)
-
-    render_account_report(_bank_slug, titulo, nro, acc_id, all_lines, bna_extras=bna_extras)
-
-else:
-    # Desconocido: procesar genérico
-    all_lines = [l for _, l in extract_all_lines(io.BytesIO(data))]
-    render_account_report(_bank_slug, "CUENTA", "s/n", "generica-unica", all_lines)
+    render_account_report(_bank_slug, "Caja de Ahorros Pesos", "s/n", "santafe-unica", all_lines)
