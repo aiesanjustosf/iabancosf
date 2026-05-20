@@ -14,7 +14,7 @@ FAVICON = HERE / "favicon-aie.ico"
 st.set_page_config(page_title="IA Resumen Bancario", page_icon=str(FAVICON) if FAVICON.exists() else None)
 if LOGO.exists():
     st.image(str(LOGO), width=200)
-st.title("IA Resumen Bancario")
+st.title("IA Resumen Bancario VER SI ES SANTA FE SIN SUBTOTALES")
 
 # --- deps diferidas ---
 try:
